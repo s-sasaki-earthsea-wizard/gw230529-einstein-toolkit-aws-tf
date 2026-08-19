@@ -6,8 +6,85 @@ a single spot compute node, an S3 bucket that acts as the system of record,
 a private registry for the Einstein Toolkit image, and the cost guardrails
 that keep the whole project inside a 300 USD cap.
 
-See [docs/architecture.md](docs/architecture.md) for the diagrams and the
-reasoning behind each choice.
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph WS["Local workstation"]
+    OP["operator<br/>terraform CLI, make"]
+    IMG["Einstein Toolkit image<br/>5-8 GB"]
+    UP["parfile + FUKA initial data<br/>4 files, 1.6 MB, not redistributable"]
+    RES["figures and analysis"]
+  end
+
+  subgraph AWS["AWS, one region: us-west-2"]
+    STATE[("S3: Terraform state<br/>stacks/bootstrap, applied once")]
+
+    subgraph FOUND["stacks/foundation: months, idle cost ~0"]
+      ECR[("ECR private repository<br/>keep last 3 images")]
+      DATA[("S3 data bucket<br/>inputs / checkpoints / output / artifacts")]
+      NET["VPC: public subnet, no inbound<br/>S3 gateway endpoint, IAM instance profile"]
+      GUARD["Budgets, Cost Anomaly Detection<br/>SNS, EventBridge"]
+    end
+
+    subgraph COMP["stacks/compute: one run, destroyed after"]
+      NODE["EC2 spot node<br/>c7a.48xlarge, 192 cores, gp3"]
+    end
+  end
+
+  IMG -->|make push-image| ECR
+  UP -->|make upload-inputs| DATA
+  OP -->|terraform apply| FOUND
+  OP -->|make run / make stop| NODE
+  OP -.->|remote state| STATE
+  ECR -->|pull at boot| NODE
+  NODE <-->|sync over the gateway endpoint, 0 USD| DATA
+  NET -.->|subnet, security group, role| NODE
+  NODE -.->|SSM Session Manager| OP
+  GUARD -.->|budget and interruption mail| OP
+  DATA -->|aws s3 cp| RES
+```
+
+Four properties the picture is meant to make obvious:
+
+- **S3 is the system of record; EBS is scratch.** The node holds nothing that
+  matters for longer than one sync interval, so losing it to a spot
+  interruption costs minutes, not a run.
+- **The stacks are split by lifetime, not by environment.** `foundation` bills
+  ~1 USD/month and stays; `compute` is created for a run and destroyed after.
+  A `destroy` in `compute` cannot reach the data or the image — they are not
+  in that state file.
+- **Nothing listens.** The security group has no ingress rules; operator
+  access is SSM Session Manager, which the node opens outbound.
+- **The two artefacts the image does not carry** — the parfile and the FUKA
+  initial data — arrive from the private bucket at boot. They are Einstein
+  Toolkit gallery files, so they are neither committed here nor baked into
+  ECR.
+
+### During a run
+
+```mermaid
+flowchart LR
+  START["make run"] --> BOOT["boot: pull image, fetch inputs,<br/>restore the slot named by CURRENT"]
+  BOOT --> RUN["Einstein Toolkit<br/>checkpoint every walltime hour"]
+  RUN -->|every 5 min, skipped if unchanged| SYNC["sidecar: upload to the idle slot,<br/>write CURRENT only on success"]
+  SYNC --> RUN
+  RUN -->|spot interruption, ~2 min warning| FLUSH["flush what is already on disk"]
+  FLUSH -.->|terraform apply again| START
+  RUN -->|run completes| FIN["final sync, then shutdown<br/>= terminate, billing stops"]
+```
+
+Checkpoints alternate between `checkpoints/slot-a/` and `checkpoints/slot-b/`,
+which holds S3 at about 156 GB instead of the 4.7 TB a push-only mirror would
+accumulate over a 30 hour run. `CURRENT` is written only after an upload
+returns success, so a node reclaimed mid-upload leaves a torn set that restore
+will not select — a timestamp would have picked exactly that set, because it
+is the newest.
+
+[docs/architecture.md](docs/architecture.md) carries the detailed diagrams and
+the reasoning behind each choice: the region and instance measurements, why a
+public subnet, the checkpoint interval arithmetic, and the known operational
+hazards.
 
 ## Layout
 
