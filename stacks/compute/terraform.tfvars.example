@@ -1,0 +1,61 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+
+aws_region = "us-west-2"
+
+# Where the foundation stack keeps its state. Same bucket as backend.hcl.
+foundation_state = {
+  bucket = "gw230529-tfstate-CHANGEME"
+  key    = "foundation/terraform.tfstate"
+  region = "us-west-2"
+}
+
+# ------------------------------------------------------------------
+# Phase 4: ops loop rehearsal -- slot rotation, interruption, restore
+#
+# No physics. c7a.2xlarge has 16 GiB and the Phase 2 measurements leave no
+# resolution that both fits and runs: dx=28 needs 37.1 GB, dx=33.6 needs
+# 21-26 GB, and dx=67.2 fits but NaNs on the first evolution step because the
+# refinement boxes lose too many cells. The synthetic payload exercises every
+# operational path that Phase 4 exists to test, for a few dollars.
+# ------------------------------------------------------------------
+run_mode             = "ops-rehearsal"
+instance_type        = "c7a.2xlarge"
+run_name             = "phase4-opsloop"
+mpi_procs            = 8
+rehearsal_payload_gb = 25
+root_volume_size_gb  = 100
+
+# ------------------------------------------------------------------
+# Phase 5-6: full resolution
+#
+# Requires `make upload-inputs` first -- the parfile and FUKA initial data are
+# fetched from the bucket, not baked into the image. Put the resolution in
+# run_name: checkpoint_dir is cwd relative, so runs sharing a parent directory
+# would let recover=autoprobe pick up the wrong resolution's checkpoint.
+# ------------------------------------------------------------------
+# run_mode            = "simulation"
+# instance_type       = "c7a.48xlarge"
+# run_name            = "phase6-production-dx19p2"
+# mpi_procs           = 192
+# root_volume_size_gb = 500
+
+# ------------------------------------------------------------------
+# Availability zone
+# ------------------------------------------------------------------
+# Zone NAMES are shuffled per AWS account; zone IDs are not. Re-run
+# `make region-scout` to get this account's mapping and its current placement
+# scores before pinning a value.
+#
+# Measured 2026-08-19, target 192 vCPU, all three candidate types:
+#   us-west-2d  usw2-az4  score 9  c7a.48xlarge 2.97 USD/h   <- preferred
+#   us-west-2a  usw2-az2  score 9  c7a.48xlarge 3.05 USD/h
+#   us-west-2c  usw2-az3  score 9  c7a.48xlarge 3.32 USD/h
+#   us-west-2b  usw2-az1  unscored
+#
+# Null uses the first subnet the foundation stack created, which is not
+# necessarily the cheapest zone -- set it explicitly for a production run.
+availability_zone = "us-west-2d"
+
+# The run switch. `make run` and `make stop` flip this from the command line;
+# leaving it false here means a bare `terraform apply` never starts billing.
+run_enabled = false

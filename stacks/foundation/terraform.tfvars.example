@@ -1,0 +1,25 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+
+# Fixed for the life of the project. Decide with `make region-scout`.
+aws_region = "us-west-2"
+
+# Globally unique. A random suffix avoids collisions without exposing the
+# account id.
+data_bucket_name = "gw230529-data-CHANGEME"
+
+# Receives budget alerts, cost anomaly alerts and spot interruption warnings.
+# Each SNS topic sends a confirmation mail that has to be clicked once.
+alert_email = "you@example.com"
+
+# Total project cap and the absolute USD thresholds that trigger an alert.
+budget_limit_usd      = 300
+budget_thresholds_usd = [50, 100, 150, 200, 250, 300]
+
+# Anchor of the annual budget period. The cap is a project total spanning
+# several months, not a monthly allowance.
+budget_period_start = "2026-08-01_00:00"
+
+# Leave the tag filter unset until `Project` has been activated as a cost
+# allocation tag in the Billing console. An unactivated tag filter matches
+# nothing, and a budget that matches nothing never alerts.
+# cost_allocation_tag = { key = "Project", value = "gw230529" }
