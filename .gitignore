@@ -1,0 +1,46 @@
+# ============================================================
+# Terraform
+# ============================================================
+# State is remote (S3); never track it. Bootstrap keeps a local state file.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.tfstate.lock.info
+crash.log
+crash.*.log
+
+# Variable files hold the AWS account id, bucket names and the alert address.
+# Only the *.example templates are tracked.
+*.tfvars
+*.tfvars.json
+
+# Partial backend configuration (state bucket name / key / region).
+backend.hcl
+
+# Local overrides.
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# NOTE: .terraform.lock.hcl is intentionally NOT ignored. It pins provider
+# checksums and contains no account-specific data -- commit it.
+
+# ============================================================
+# Local configuration and credentials
+# ============================================================
+.env
+*.pem
+*.ppk
+
+# ============================================================
+# Claude session notes (not versioned)
+# ============================================================
+.claude-notes/
+
+# ============================================================
+# Misc
+# ============================================================
+.DS_Store
+*.plan
+plan.out
