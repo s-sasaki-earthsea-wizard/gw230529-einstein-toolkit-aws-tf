@@ -37,8 +37,20 @@ variable "vpc_cidr" {
   default     = "10.20.0.0/16"
 }
 
+variable "availability_zones" {
+  description = <<-EOT
+    Availability zone names to place public subnets in, most preferred first.
+    Null takes the first az_count zones by name, which is ordered
+    alphabetically and therefore says nothing about spot capacity. Set this
+    from `make region-scout`, and include every zone the compute stack might
+    be pointed at -- it selects a subnet by zone name.
+  EOT
+  type        = list(string)
+  default     = null
+}
+
 variable "az_count" {
-  description = "Number of availability zones to place a public subnet in."
+  description = "Number of zones to use when availability_zones is null."
   type        = number
   default     = 3
 }

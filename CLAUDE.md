@@ -45,6 +45,23 @@ target 192 vCPU / single-AZ / c7a・m7a・c7i の 48xlarge で計測。
 - **クォータ緩和申請は不要だった** — us-east-1 / us-west-2 は既に 256 vCPU。
   当初の「今すぐ申請」という申し送りは解消
 
+**AZ は名前順ではなく明示リストで指定する (2026-08-20 修正)**
+
+`modules/network` は当初 `slice(names, 0, az_count)` で AZ を選んでいたが、
+us-west-2 の名前順は a → b → c → d なので `az_count = 3` だと
+**最安・score 9 の us-west-2d が漏れ、unscored の us-west-2b が入る**。
+compute は subnet を AZ 名で引くので、`availability_zone = "us-west-2d"` が
+plan 時にキー不在で落ちる状態だった。
+
+`availability_zones = ["us-west-2d", "us-west-2a", "us-west-2c"]` を
+foundation の変数として渡す方式に変更。`az_count` は null 時のフォールバック
+として残す。併せて `public_subnet_ids` の出力を map 反復 (辞書順) から
+`local.azs` 順に直した — compute が AZ を指定しないときの既定が
+辞書順先頭ではなく第一希望になるようにするため。
+
+- **リストの順序は CIDR に効く**。subnet の CIDR はリスト位置から
+  `cidrsubnet` で決まるので、並べ替えると全 subnet が replace される。追加は安全
+
 ### checkpoint 同期の設計 (2026-08-20 決定)
 
 本体 repo の Phase 2 実測 (checkpoint 25 GB @ dx=28 → フル解像度 78 GB) を

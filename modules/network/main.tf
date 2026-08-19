@@ -28,7 +28,17 @@ data "aws_availability_zones" "available" {
 }
 
 locals {
-  azs = slice(data.aws_availability_zones.available.names, 0, var.az_count)
+  # An explicit list wins. The fallback orders zones by name, which has nothing
+  # to do with where spot capacity is: in us-west-2 the first three names are
+  # a, b and c, which omits the highest scoring zone (us-west-2d, usw2-az4) and
+  # includes the one that scores nothing (us-west-2b, usw2-az1). Name order is
+  # a fine default only because subnets are free -- it is not a placement
+  # decision, so a production deployment should pass availability_zones.
+  azs = (
+    var.availability_zones != null
+    ? var.availability_zones
+    : slice(data.aws_availability_zones.available.names, 0, var.az_count)
+  )
 }
 
 resource "aws_vpc" "this" {
@@ -49,6 +59,8 @@ resource "aws_internet_gateway" "this" {
   }
 }
 
+# The CIDR of each subnet comes from its position in local.azs, so reordering
+# the zone list replaces every subnet. Append rather than reorder.
 resource "aws_subnet" "public" {
   for_each = { for idx, az in local.azs : az => idx }
 

@@ -19,7 +19,7 @@ output "vpc_id" {
 }
 
 output "public_subnet_ids" {
-  description = "Public subnet ids, one per availability zone."
+  description = "Public subnet ids, most preferred availability zone first."
   value       = module.network.public_subnet_ids
 }
 

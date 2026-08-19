@@ -52,8 +52,13 @@ root_volume_size_gb  = 100
 #   us-west-2c  usw2-az3  score 9  c7a.48xlarge 3.32 USD/h
 #   us-west-2b  usw2-az1  unscored
 #
-# Null uses the first subnet the foundation stack created, which is not
-# necessarily the cheapest zone -- set it explicitly for a production run.
+# The zone has to be one the foundation stack put a subnet in: this stack
+# looks the subnet up by zone name, so a zone missing from foundation's
+# availability_zones fails at plan time rather than falling back.
+#
+# Null uses foundation's first subnet, which is the first entry of that list
+# and therefore the preferred zone -- but say it explicitly for a production
+# run, so the intent survives a change to the foundation stack.
 availability_zone = "us-west-2d"
 
 # The run switch. `make run` and `make stop` flip this from the command line;

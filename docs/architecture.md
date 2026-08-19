@@ -118,6 +118,15 @@ Preferred zone **us-west-2d** (`usw2-az4`), then `us-west-2a`, then
 `us-west-2c`. Zone names are shuffled per account — the IDs are what stay
 put, and `make region-scout` prints the mapping.
 
+Those three names go into the foundation stack's `availability_zones`, and
+that list is what the compute stack can choose from: it looks its subnet up by
+zone name, so a zone with no subnet is a plan-time error rather than a
+fallback. The alternative — taking the first N zones the region reports — sorts
+by name, which in us-west-2 yields a, b and c: it omits the cheapest scored
+zone and includes `us-west-2b` (`usw2-az1`), which scored nothing at all.
+Subnets are free, so the fallback costs nothing but capacity; it is a default,
+not a placement decision.
+
 ### Why c7a and not c7i
 
 The instance types are not interchangeable at equal vCPU count:
@@ -377,7 +386,7 @@ and neither can prevent anything: AWS billing data lags 8–24 hours.
 | Hazard | Handling |
 | --- | --- |
 | Spot vCPU service quota defaults far below 192 | Raise it before Phase 5; approval takes hours to days. `make region-scout` reports the current value. |
-| `InsufficientInstanceCapacity` on a 192 vCPU request | Vary `availability_zone`, then `instance_type` (m7a.48xlarge, c7i.48xlarge). |
+| `InsufficientInstanceCapacity` on a 192 vCPU request | Vary `availability_zone`, then `instance_type` (m7a.48xlarge, c7i.48xlarge). Only zones listed in foundation's `availability_zones` are reachable. |
 | Deep Archive bills a 180 day minimum | `artifacts/` transitions after a delay, so a bad run can be deleted before it is archived. |
 | SNS subscriptions start unconfirmed | Click the link in each of the two confirmation mails after the first apply. |
 | A budget filtered on an unactivated cost allocation tag never fires | `cost_allocation_tag` defaults to null, giving an account-wide budget. |

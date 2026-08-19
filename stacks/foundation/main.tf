@@ -14,9 +14,10 @@
 module "network" {
   source = "../../modules/network"
 
-  name_prefix = var.name_prefix
-  vpc_cidr    = var.vpc_cidr
-  az_count    = var.az_count
+  name_prefix        = var.name_prefix
+  vpc_cidr           = var.vpc_cidr
+  availability_zones = var.availability_zones
+  az_count           = var.az_count
 }
 
 module "storage" {

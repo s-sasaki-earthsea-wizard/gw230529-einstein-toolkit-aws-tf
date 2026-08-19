@@ -6,9 +6,13 @@ output "vpc_id" {
   value       = aws_vpc.this.id
 }
 
+# Iterating the resource map directly would sort by zone name, so the
+# preference order expressed in availability_zones would be lost and element
+# zero -- what the compute stack falls back to when it names no zone -- would
+# be alphabetical rather than preferred. Index by local.azs instead.
 output "public_subnet_ids" {
-  description = "Public subnet ids, one per availability zone."
-  value       = [for s in aws_subnet.public : s.id]
+  description = "Public subnet ids, most preferred availability zone first."
+  value       = [for az in local.azs : aws_subnet.public[az].id]
 }
 
 output "public_subnet_ids_by_az" {
