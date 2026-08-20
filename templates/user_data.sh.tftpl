@@ -50,6 +50,11 @@ C_RUN_DIR="$${C_RUN_PARENT}/run"
 C_CKPT_DIR="$${C_RUN_PARENT}/CHECKPOINTS"
 C_INPUTS=/home/etuser/inputs
 
+# Absolute, because it is not on PATH. The image sets no ENV PATH beyond the
+# distribution default, so the 988 MB binary at this location is invisible to
+# a bare `cactus_sim`. Verified against gw230529-et:local on 2026-08-20.
+CACTUS_EXE=/home/etuser/Cactus/exe/cactus_sim
+
 export AWS_DEFAULT_REGION="$${AWS_REGION}"
 
 # ------------------------------------------------------------------
@@ -433,9 +438,21 @@ else
   # dropping the inner mount: the sidecar would then treat 78 GB of
   # checkpoints as diagnostic output.
   #
-  # TODO(phase4): confirm the mpirun invocation and the in-image path to
-  # cactus_sim against the built image. Everything else here is settled --
-  # Phase 2 verified np=16 checkpoint writes with no POSIX lock errors, one
+  # The invocation is checked against the built image rather than assumed
+  # (2026-08-20, gw230529-et:local):
+  #
+  #   cactus_sim is NOT on PATH. The image adds nothing to the distribution
+  #   default, so a bare name resolves to nothing and the run would die on
+  #   its first command. Hence the absolute CACTUS_EXE above.
+  #
+  #   mpirun.mpich rather than mpirun. Both reach mpiexec.hydra today, but
+  #   /usr/bin/mpirun goes through /etc/alternatives/mpirun while
+  #   /usr/bin/mpirun.mpich is a direct symlink. The image sets that
+  #   alternative deliberately -- a mixed Open MPI / MPICH link was the Phase 1
+  #   bug that made every rank believe it was rank 0 -- so the launcher should
+  #   not depend on the alternatives database still being right.
+  #
+  # Phase 2 verified np=16 checkpoint writes with no POSIX lock errors and one
   # HDF5 file per rank, so the reference pure-MPI shape holds.
   # ----------------------------------------------------------------
   echo "simulation: $${IMAGE} parfile=$${PARFILE} np=$${MPI_PROCS} omp=$${OMP_THREADS}"
@@ -448,7 +465,7 @@ else
     -v "$${WORK_DIR}/inputs:$${C_INPUTS}:ro" \
     -w "$${C_RUN_DIR}" \
     "$${IMAGE}" \
-    mpirun -np "$${MPI_PROCS}" cactus_sim "$${C_INPUTS}/$${PARFILE}" \
+    mpirun.mpich -np "$${MPI_PROCS}" "$${CACTUS_EXE}" "$${C_INPUTS}/$${PARFILE}" \
     || RUN_STATUS=$?
 
   echo "simulation exited with status $${RUN_STATUS}"
