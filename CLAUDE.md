@@ -215,9 +215,22 @@ sibling repo の Phase 1 (Docker ビルド) / Phase 2 (ローカル smoke) か�
   `templates/user_data.sh.tftpl` に `TODO(phase5)` として記録済み
 - **【要対応】本番インスタンスタイプは Phase 5 のメモリ実測で確定する**。
   np=192 で単一ノードに載らない場合、マルチノード MPI は
-  「学習目的の選択肢」から**必要条件**に格上げされる
+  「学習目的の選択肢」から**必要条件**に格上げされる。
+
+  **【2026-08-20 更新】これは 2 時間 $7.5 の run を要さない。** Carpet は
+  初期データ import に入る**前**に `Total required memory` を出力する
+  (dx=28 / np=32 で 42.347 GByte、ノード実測 43–47 GiB と整合)。
+  Cactus 起動から約 2 分。**m7a.48xlarge を数分回して 1 行読めば済む**。
+  手順は `stacks/compute/terraform.tfvars.example` の memory probe プロファイル
 - **78 GB は dx=28 の 25 GB からの外挿**。フル解像度の実測は Phase 5 待ち。
-  `root_volume_size_gb` と slot 設計はこの値に依存している
+  `root_volume_size_gb` と slot 設計はこの値に依存している。
+
+  **【2026-08-20 更新】この外挿は rank 数の効果を含んでいない。**
+  同じ dx=28 で np=16 の 25 GB に対し **np=32 では 30.1 GB** (クラウド実測、
+  32 ファイル)。checkpoint は rank ごとに ghost を含めて書くので当然だが、
+  78 GB は解像度比だけで作られた数字。解像度 3.10 倍 × ghost 増分 1.44 倍を
+  当てると **134 GB/世代**、keep=2 で EBS 268 GB・S3 536 GB になる。
+  外挿の外挿なので数字は仮だが、**500 GB の余裕は想定より薄い**
 - **IAM ユーザー `gw230529` に `policies/terraform-operator.json` を付与する**
   【2026-08-20 完了: `make check-permissions` で 109/109 allowed を確認済み】
 
