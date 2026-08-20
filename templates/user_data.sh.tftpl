@@ -187,6 +187,39 @@ fi
 aws s3 sync "$${S3_RUN}/output/" "$${WORK_DIR}/simulations/" --only-show-errors
 
 # ------------------------------------------------------------------
+# 3b. Hand the run directories to the user the container runs as
+#
+# The image drops to etuser, and a bind mount keeps the host's ownership, so
+# the directories created above -- and everything the restore just wrote --
+# are root owned and mode 0755. The container would then fail on the first
+# thing the run does, which is Cactus creating IOUtil::out_dir ("./data/").
+# Verified against gw230529-et:local on 2026-08-20: uid 1000 cannot write a
+# root owned 0755 bind mount.
+#
+# Phase 4 never hit this because the ops rehearsal writes its payload as root
+# from this script and never enters the container.
+#
+# The uid is read from the image rather than written here, so that a rebuild
+# which moves it fails loudly instead of quietly losing write access. It has
+# to run after the restore: the sync above runs as root and would otherwise
+# put root owned checkpoints back into a directory that had been handed over.
+# ------------------------------------------------------------------
+if [ "$${RUN_MODE}" = "simulation" ]; then
+  CONTAINER_UID="$(docker run --rm "$${IMAGE}" id -u)"
+  CONTAINER_GID="$(docker run --rm "$${IMAGE}" id -g)"
+  case "$${CONTAINER_UID}:$${CONTAINER_GID}" in
+    [0-9]*:[0-9]*) ;;
+    *)
+      echo "FATAL: could not read the container uid/gid from $${IMAGE}"
+      exit 1
+      ;;
+  esac
+  chown -R "$${CONTAINER_UID}:$${CONTAINER_GID}" \
+    "$${WORK_DIR}/simulations" "$${WORK_DIR}/checkpoints"
+  echo "run directories handed to uid $${CONTAINER_UID}:$${CONTAINER_GID}"
+fi
+
+# ------------------------------------------------------------------
 # 4. Sidecar: periodic sync to S3
 #
 # Two design points, both driven by the Phase 2 measurement that a production
