@@ -72,7 +72,12 @@ resource "aws_launch_template" "node" {
 
   instance_initiated_shutdown_behavior = "terminate"
 
-  user_data = base64encode(templatefile(var.user_data_template, {
+  # gzip, not plain base64. EC2 caps user data at 16 KB and this script is
+  # 17.5 KB rendered -- most of it the comments that record why the sidecar
+  # behaves the way it does, which is exactly what should not be deleted to
+  # save bytes. cloud-init decompresses gzipped user data before running it,
+  # so the node sees the same script. 8.8 KB encoded leaves 47% headroom.
+  user_data = base64gzip(templatefile(var.user_data_template, {
     aws_region            = data.aws_region.current.region
     run_mode              = var.run_config.run_mode
     ecr_repository_url    = var.run_config.ecr_repository_url
