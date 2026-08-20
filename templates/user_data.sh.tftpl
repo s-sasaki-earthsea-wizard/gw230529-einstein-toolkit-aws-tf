@@ -255,6 +255,7 @@ export AWS_DEFAULT_REGION="$${AWS_REGION}"
 CKPT_DIR="$${WORK_DIR}/checkpoints"
 S3_CKPT="$${S3_RUN}/checkpoints"
 KEEP=$${CHECKPOINT_GENERATIONS_KEPT}
+RANKS=$${MPI_PROCS}
 
 # Diagnostic output first: cheap, additive, and never blocks a restart.
 # CHECKPOINTS is excluded as a guard: it should be empty on the host because
@@ -273,17 +274,35 @@ aws s3 sync "$${WORK_DIR}/simulations/" "$${S3_RUN}/output/" \
 aws s3 cp /var/log/gw230529-bootstrap.log "$${S3_RUN}/logs/bootstrap.log" \
   --only-show-errors || true
 
-# TODO(phase4): replace with a real completeness test once Phase 2-3 has
-# pinned down the checkpoint file naming and the rank count. The set is
-# complete when it holds exactly \$MPI_PROCS files for the same iteration and
-# none of them has been modified in the last 30 seconds. Syncing a set that
-# Cactus is still writing is the one failure this whole design exists to
-# prevent, so this predicate must be conservative: when in doubt, skip and
-# let the next tick handle it.
+# Completeness. Syncing a set that Cactus is still writing is the one failure
+# this whole design exists to prevent, so both halves have to hold: nothing
+# written in the last 30 seconds, and the newest generation holding one file
+# per rank. Naming confirmed on 2026-08-20 -- checkpoint.chkpt.it_<N>.file_<R>.h5,
+# 32 of them at np=32.
+#
+# Quiescence alone is not enough. A writer that dies part way through leaves a
+# set that stops changing while still missing ranks, and thirty seconds later
+# this would push it and then point CURRENT at it -- an unrecoverable slot,
+# arrived at by the very check meant to prevent one. The count is what makes
+# the test positive rather than merely "nothing happened recently".
+#
+# When in doubt, skip: the next tick will handle it.
 newest=\$(find "\$${CKPT_DIR}" -name '*.h5' -newermt '-30 seconds' -print -quit 2>/dev/null || true)
 if [ -n "\$${newest}" ]; then
   echo "checkpoint still being written; skipping this tick"
   exit 0
+fi
+
+newest_gen=\$(find "\$${CKPT_DIR}" -maxdepth 1 -name '*.h5' -printf '%f\n' 2>/dev/null \
+  | grep -oE 'it_[0-9]+' | sort -u -t_ -k2 -n | tail -1 || true)
+if [ -n "\$${newest_gen}" ]; then
+  # The dots around the generation anchor it: "*.it_1.*" must not match
+  # it_10 or it_16.
+  have=\$(find "\$${CKPT_DIR}" -maxdepth 1 -name "*.\$${newest_gen}.*.h5" 2>/dev/null | wc -l)
+  if [ "\$${have}" -ne "\$${RANKS}" ]; then
+    echo "generation \$${newest_gen} has \$${have} of \$${RANKS} files; skipping this tick"
+    exit 0
+  fi
 fi
 
 # Nothing new since the last successful push?
