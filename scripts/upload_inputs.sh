@@ -29,6 +29,11 @@
 #
 # Every rewrite is checked afterwards. A sed that silently matches nothing is
 # the failure mode this whole script exists to prevent.
+#
+# The parfile's own /path/to/ placeholder for the FUKA initial data is left
+# alone here -- the node rewrites it onto whatever it mounted. What is checked
+# is the basename, because that is what the node then has to find among the
+# files this script uploads.
 
 set -euo pipefail
 
@@ -120,6 +125,30 @@ assert "checkpoint_keep" \
   "^[[:space:]]*${P}::checkpoint_keep[[:space:]]*=[[:space:]]*[2-9][0-9]*[[:space:]]*\$" \
   "below 2 -- no local fallback if the newest checkpoint is unreadable"
 
+# The parfile names the FUKA .info file by absolute path, and the gallery
+# ships the same /path/to/ placeholder there as inside the .info itself. The
+# node rewrites the directory at boot, so the path here does not matter -- but
+# the basename does, because that is the file the node then looks for among
+# the ones this script uploads. A parfile naming an .info that is not in the
+# initial data set produces a Kadath import error a whole boot later.
+ID_INFO_IN_PAR="$(sed -nE \
+  's|^[[:space:]]*kadathimporter::filename[[:space:]]*=[[:space:]]*"([^"]*)".*|\1|Ip' \
+  "${OUT}" | head -1)"
+ID_INFO_BASENAME="${ID_INFO_IN_PAR##*/}"
+
+if [ -z "${ID_INFO_BASENAME}" ]; then
+  printf '  %-34s FAIL %s\n' "kadathimporter::filename" \
+    "absent -- the run would have no initial data to import"
+  status=1
+elif [ ! -f "${SRC_DIR}/${ID_DIR}/${ID_INFO_BASENAME}" ]; then
+  printf '  %-34s FAIL %s\n' "kadathimporter::filename" \
+    "names ${ID_INFO_BASENAME}, which is not in ${SRC_DIR}/${ID_DIR}/"
+  status=1
+else
+  printf '  %-34s OK   %s\n' "kadathimporter::filename" \
+    "${ID_INFO_BASENAME} (the node rewrites the directory at boot)"
+fi
+
 if [ "${status}" -ne 0 ]; then
   echo ""
   echo "Refusing to upload a parfile that cannot survive an interruption."
@@ -147,6 +176,7 @@ aws s3 cp "${SRC_DIR}/${ID_DIR}/" "s3://${BUCKET}/inputs/" \
   --include '*.info' --include '*.dat' --include 'gam2.polytrope'
 
 echo ""
-echo "Done. The node rewrites the .info eosfile path at boot and aborts if"
-echo "that rewrite does not take, so the placeholder in the uploaded copy is"
-echo "expected."
+echo "Done. Both /path/to/ placeholders -- the eosfile inside the .info and the"
+echo "initial data path in the parfile -- are still in the uploaded copies, and"
+echo "are meant to be: the node rewrites them onto its own mount point at boot"
+echo "and aborts if either rewrite does not take."

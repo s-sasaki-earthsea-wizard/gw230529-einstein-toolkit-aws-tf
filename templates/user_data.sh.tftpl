@@ -128,6 +128,42 @@ if [ "$${RUN_MODE}" = "simulation" ]; then
     echo "FATAL: eosfile path rewrite did not take; the run would abort on the EOS table"
     exit 1
   fi
+
+  # The parfile carries a second copy of the same placeholder: it points
+  # KadathImporter at the .info file by absolute path, and the gallery ships
+  # that as /path/to/ as well. Fixing the .info alone is not enough -- Cactus
+  # reads the parfile first, so this is the one that decides whether the run
+  # starts at all.
+  #
+  # Only the basename survives the rewrite. Where the initial data lives is
+  # this script's decision (it chose the mount point), not the gallery's.
+  # Two expressions for the same reason as the .info rewrite above: the second
+  # covers a value that is already a bare filename, which a parfile generated
+  # elsewhere may well carry.
+  sed -i -E \
+    -e "s|^([[:space:]]*kadathimporter::filename[[:space:]]*=[[:space:]]*\")[^\"]*/([^\"/]+)(\")|\1$${C_INPUTS}/\2\3|I" \
+    -e "s|^([[:space:]]*kadathimporter::filename[[:space:]]*=[[:space:]]*\")([^\"/]+)(\")|\1$${C_INPUTS}/\2\3|I" \
+    "$${WORK_DIR}/inputs/$${PARFILE}"
+
+  ID_INFO="$(sed -nE 's|^[[:space:]]*kadathimporter::filename[[:space:]]*=[[:space:]]*"([^"]*)".*|\1|Ip' \
+    "$${WORK_DIR}/inputs/$${PARFILE}" | head -1)"
+  echo "kadathimporter::filename: $${ID_INFO:-<absent>}"
+
+  case "$${ID_INFO}" in
+    "$${C_INPUTS}/"*) ;;
+    *)
+      echo "FATAL: initial data path rewrite did not take; the run would abort on the import"
+      exit 1
+      ;;
+  esac
+
+  # Rewriting the directory is worthless if the file it now names was never
+  # uploaded, and that failure surfaces only after the container has started.
+  if [ ! -f "$${WORK_DIR}/inputs/$${ID_INFO##*/}" ]; then
+    echo "FATAL: $${ID_INFO##*/} is not among the files under $${S3_INPUTS}/"
+    ls -1 "$${WORK_DIR}/inputs/"
+    exit 1
+  fi
 fi
 
 # ------------------------------------------------------------------
