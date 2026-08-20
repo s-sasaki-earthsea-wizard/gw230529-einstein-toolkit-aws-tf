@@ -176,12 +176,19 @@ requirement.
 
 us-west-2d spot prices, measured 2026-08-20.
 
-**m7a.48xlarge is the planning default.** 768 GiB is the only single-node
-figure with real headroom over the reference, and 26% per core over c7a is
-cheap next to losing a run to an out-of-memory kill. c7a.48xlarge keeps the
-best price per core and becomes the production type only if Phase 5 measures
-the working set well clear of 384 GiB. r7a.48xlarge is the escape hatch if
-768 GiB also proves short.
+**c7a.48xlarge is the production type**, decided by measurement on
+2026-08-20 rather than by the projection this section originally carried. A
+full resolution run at np=192 and 8 refinement levels reported 125.273 GByte
+from Carpet and 136 GiB across the whole node — 35% of c7a's 384 GiB.
+
+The earlier reasoning read the reference run's 438.5 GB as a floor for what
+192 ranks would need. It is not: that is a scheduler's high water mark over
+480 ranks spread across 12 nodes, and a decomposition that fine duplicates
+far more ghost zones. Carpet reports the effect directly — grid function
+points run to +95% over owned at np=192 against +68% at np=32.
+
+m7a.48xlarge (768 GiB) stays the fallback if a merger-time regrid grows the
+working set beyond the 2.8x headroom, with r7a.48xlarge behind it.
 
 **c7i.48xlarge is out.** Its hourly price sits within 3% of c7a's, which is
 precisely what makes it a trap: half of its 192 vCPUs are hyperthreads, so the
@@ -207,9 +214,12 @@ core, which brackets the run at 38–76 hours:
 | c7a.48xlarge at 2.978 USD/h | 113 USD | 152 USD | 226 USD |
 | m7a.48xlarge at 3.747 USD/h | 142 USD | 190 USD | **285 USD** |
 
-The pessimistic corner — m7a at reference per-core performance — consumes the
-entire 300 USD budget on its own. There is a lever for that, and it is a
-physics decision rather than an infrastructure one: the merger is at
+With c7a.48xlarge now the production type the pessimistic corner is 226 USD
+rather than 285. The hours themselves remain an extrapolation from the
+reference run's core-hours — sec/iter at full resolution is unmeasured, and a
+four iteration probe cannot supply it, because start-up analysis dominates a
+sample that short. There is also a lever, and it is a physics decision rather
+than an infrastructure one: the merger is at
 t ≈ 713 M, so the last 1300 M of the 2000 M buys post-merger disc evolution.
 Truncating at ~1500 M saves roughly 25% and still leaves the ringdown room.
 Phase 5 measures the real sec/iter; that is when the call gets made.
@@ -485,8 +495,8 @@ and neither can prevent anything: AWS billing data lags 8–24 hours.
 
 | Hazard | Handling |
 | --- | --- |
-| The np=192 working set may not fit 384 GiB | The reference reports 438.5 GB across 12 nodes. Plan on m7a.48xlarge (768 GiB); treat the Phase 5 measurement as a go/no-go gate, not a formality. |
-| `IO::checkpoint_keep` does not prune across runs | Phase 2 left three generations, 77 GB, after two runs. At 78 GB each a 500 GB volume fills after six. The S3 slot rotation bounds S3 only — the sidecar has to prune EBS itself, keeping the generation `CURRENT` names plus one. |
+| ~~The np=192 working set may not fit 384 GiB~~ Settled 2026-08-20 | Measured at 136 GiB across the node, 35% of c7a.48xlarge's 384 GiB. The reference's 438.5 GB was a high water mark over 480 ranks on 12 nodes, not a floor for 192. |
+| `IO::checkpoint_keep` does not prune across runs | Phase 2 left three generations, 77 GB, after two runs. At the measured 85.7 GB each a 500 GB volume fills after five. The S3 slot rotation bounds S3 only — the sidecar has to prune EBS itself, keeping the generation `CURRENT` names plus one. |
 | Spot vCPU service quota defaults far below 192 | Raise it before Phase 5; approval takes hours to days. `make region-scout` reports the current value. |
 | `InsufficientInstanceCapacity` on a 192 vCPU request | Vary `availability_zone` first — only zones listed in foundation's `availability_zones` are reachable — then `instance_type` across m7a / c7a / r7a .48xlarge. Not c7i: it is half the machine at twice the price per real core. |
 | Deep Archive bills a 180 day minimum | `artifacts/` transitions after a delay, so a bad run can be deleted before it is archived. |

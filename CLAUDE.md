@@ -18,7 +18,7 @@ ECR (ET イメージ配布)、およびコストガードレールを Terraform 
 | リージョン | 起動ごとの選択はしない。**1 回決めて固定** | ECR/S3 がリージョン束縛。移動 = 4.06 GB 再 push |
 | リージョン | **us-west-2 に確定 (2026-08-19 実測)** | 下記「リージョン選定の実測結果」 |
 | AZ | **us-west-2d (`usw2-az4`)**、次点 `us-west-2a` → `us-west-2c` | placement score 9 かつ c7a.48xlarge が最安 |
-| インスタンス | **m7a.48xlarge が既定**。Phase 5 の実測次第で c7a.48xlarge | 参照 run のメモリ実測 438.5 GB に対し c7a の 384 GiB は余裕が無い。下記「インスタンス選定の再評価」 |
+| インスタンス | **c7a.48xlarge が既定 (2026-08-20 実測で確定)** | np=192 フル解像度のメモリ実測 136 GiB は 384 GiB の 35%。下記「Phase 5 メモリ実測」 |
 | state backend | S3 + native lockfile (`use_lockfile`) | DynamoDB テーブルが不要になる |
 | S3 構成 | 1 バケット + prefix 別 lifecycle | バケット分割は分離を買わずポリシー面だけ増える |
 | ネットワーク | public subnet + IGW + S3 Gateway Endpoint | private + NAT は月 33 USD、予算の 11% |
@@ -96,10 +96,12 @@ c7a.48xlarge の 384 GiB を超えている**。
 | c7i.48xlarge | 96 SPR 3.2 GHz + HT | 384 GiB | 8 | 3.072 | 0.0320 |
 | c7a.24xlarge | 96 Genoa 3.7 GHz | 192 GiB | 12 | 1.950 | 0.0203 |
 
-- **m7a.48xlarge を既定にした**。768 GiB が単一ノードで唯一余裕のある値。
-  コア単価 +26% は OOM で run を失うリスクに対して安い保険
-- **c7a.48xlarge はコア単価最良**。Phase 5 が working set を 384 GiB から
-  十分下回ると実測したときだけ本番タイプに昇格する
+- **【2026-08-20 更新】c7a.48xlarge を既定に昇格した。** 下記「Phase 5 メモリ実測」
+  のとおり実測 136 GiB は 384 GiB の 35%。この項の当初判断は
+  「参照 run の 438.5 GB」を単一ノード np=192 の下限のように扱っていたが、
+  あれは 12 ノード 480 ランクに対するスケジューラの高水位だった
+- **m7a.48xlarge (768 GiB) は退避先**。合体時の regrid が working set を
+  2.8 倍に増やすようなら戻る。r7a.48xlarge (1536 GiB) はその後ろ
 - **r7a.48xlarge (1536 GiB) を scout に追加**。768 GiB でも足りなかった場合の逃げ道
 - **c7i.48xlarge を scout から除外**。時間単価が c7a の 3% 差に見えるのが罠で、
   物理コア単価は **2.06 倍**。メモリ 8ch / 3.2 GHz も不利。
@@ -115,12 +117,47 @@ c7a.48xlarge の 384 GiB を超えている**。
 | c7a.48xlarge @ 2.978 | 113 USD | 152 USD | 226 USD |
 | m7a.48xlarge @ 3.747 | 142 USD | 190 USD | **285 USD** |
 
-悲観端 (m7a × 参照同等) は 300 USD 枠を使い切る。逃げ道は
+**【2026-08-20 更新】c7a 行が本番の見積りになった** ので、悲観端でも 226 USD。
+ただし **sec/iter は未測定**であり、この表は参照 run の core-hours からの
+外挿のままである。逃げ道は
 **合体が t≈713 M なので 2000 M ではなく ~1500 M で打ち切る** (約 25% 節約、
 ringdown は余裕で収まる)。ただしこれは物理側の判断なので Phase 5 の実測待ち。
 
 本 repo の run 長依存の数値 (checkpoint 世代数、S3 常駐量、gp3 スループット費)
 は**すべて悲観側の 76 時間で見積もり直した**。
+
+### Phase 5 メモリ実測 (2026-08-20、np=192 フル解像度)
+
+**プロジェクト最大の未確定事項が解消した。** `bhns_smoke_dx19p2_l8_it4.par`
+(dx=19.2 / 8 levels / itlast=4 / ID checkpoint 無し) を m7a.48xlarge で
+起動し、Carpet の格子構造統計を読んだ。**起動から 3 分半**で答えが出る。
+
+| | dx=28 / np=32 | **dx=19.2 / np=192** |
+| --- | --- | --- |
+| Carpet `Total required memory` | 42.347 GB | **125.273 GB** |
+| ノード実測 (`free`) | 43–47 GiB | **134–136 GiB** |
+| GF active | 1,665M pts | 4,597M pts |
+| GF owned | 2,905M (+74%) | 6,787M (+48%) |
+| GF total | 4,889M | 13,215M (+95%) |
+| checkpoint 1 世代 | 30.1 GB / 32 ファイル | **85.7 GB / 192 ファイル** |
+| Kadath import 合計 | 549 秒 | **342 秒** |
+
+- **136 GiB は c7a.48xlarge (384 GiB) の 35%。** 単一ノードで走る。
+  マルチノード MPI は必要条件に**ならなかった**
+- **参照 run の 438.5 GB を単一ノードの下限と読んだのが誤りだった。**
+  あれは 12 ノード 480 ランクに対する SLURM の高水位。ランクを 2.5 倍に
+  割ると ghost の重複が増える。実際 np=192 でも total は owned の +95% で、
+  np=32 の +68% より大きい
+- **checkpoint は 85.7 GB/世代**。従来の外挿値 78 GB に対し +10%。
+  `root_volume_size_gb = 500` は keep=2 で 171 GB なので余裕がある
+- 検算に使える関係: **checkpoint サイズ ∝ GF total 点数**。
+  30.1 GB × (13,215/4,889) = 81 GB で、実測 85.7 GB と 5% 差
+
+**残る最大の未知は sec/iter。** この probe は 4 iteration で終わるので、
+起動時解析に埋もれて意味のある値が取れない (Phase 2 の
+「短い区間でサンプリングするな」がそのまま効く)。**76 時間・226 USD という
+見積りは、いまだに参照 run の core-hours からの外挿**である。
+次にやるべきはスループット probe (フル解像度を 1 時間以上回す、約 3 USD)。
 
 ### checkpoint 同期の設計 (2026-08-20 決定)
 
@@ -217,20 +254,19 @@ sibling repo の Phase 1 (Docker ビルド) / Phase 2 (ローカル smoke) か�
   np=192 で単一ノードに載らない場合、マルチノード MPI は
   「学習目的の選択肢」から**必要条件**に格上げされる。
 
-  **【2026-08-20 更新】これは 2 時間 $7.5 の run を要さない。** Carpet は
-  初期データ import に入る**前**に `Total required memory` を出力する
-  (dx=28 / np=32 で 42.347 GByte、ノード実測 43–47 GiB と整合)。
-  Cactus 起動から約 2 分。**m7a.48xlarge を数分回して 1 行読めば済む**。
-  手順は `stacks/compute/terraform.tfvars.example` の memory probe プロファイル
+  **【2026-08-20 解消】実測 136 GiB (Carpet 125.273 GB)。384 GiB の 35%。**
+  c7a.48xlarge を本番既定に昇格。上記「Phase 5 メモリ実測」。
+  probe は 12 分・約 0.75 USD で済んだ (手順は
+  `stacks/compute/terraform.tfvars.example` の memory probe プロファイル)
 - **78 GB は dx=28 の 25 GB からの外挿**。フル解像度の実測は Phase 5 待ち。
   `root_volume_size_gb` と slot 設計はこの値に依存している。
 
-  **【2026-08-20 更新】この外挿は rank 数の効果を含んでいない。**
-  同じ dx=28 で np=16 の 25 GB に対し **np=32 では 30.1 GB** (クラウド実測、
-  32 ファイル)。checkpoint は rank ごとに ghost を含めて書くので当然だが、
-  78 GB は解像度比だけで作られた数字。解像度 3.10 倍 × ghost 増分 1.44 倍を
-  当てると **134 GB/世代**、keep=2 で EBS 268 GB・S3 536 GB になる。
-  外挿の外挿なので数字は仮だが、**500 GB の余裕は想定より薄い**
+  **【2026-08-20 解消】実測 85.7 GB/世代 (192 ファイル)。** 78 GB に対し +10%
+  なので設計は成立する。keep=2 で EBS 171 GB・S3 343 GB。
+
+  同じ dx=28 でも np=16 の 25 GB に対し np=32 は 30.1 GB で、rank 数が効く。
+  正しい検算は **GF total 点数の比**を使うこと (解像度比だけの外挿は誤り、
+  ghost 増分を別に掛けるのは二重計上になる)
 - **IAM ユーザー `gw230529` に `policies/terraform-operator.json` を付与する**
   【2026-08-20 完了: `make check-permissions` で 109/109 allowed を確認済み】
 

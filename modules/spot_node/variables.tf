@@ -21,7 +21,7 @@ variable "instance_type" {
     EC2 instance type.
 
     Phase 4 (ops loop rehearsal): c7a.2xlarge or similar.
-    Phase 5-6 (production):       m7a.48xlarge, 192 physical cores / 768 GiB.
+    Phase 5-6 (production):       c7a.48xlarge, 192 physical cores / 384 GiB.
 
     A 192 vCPU spot request is bounded by the "All Standard (A, C, D, H, I,
     M, R, T, Z) Spot Instance Requests" quota (L-34B43A08). A fresh account

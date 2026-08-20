@@ -28,7 +28,7 @@ flowchart LR
     end
 
     subgraph COMP["stacks/compute: one run, destroyed after"]
-      NODE["EC2 spot node<br/>m7a.48xlarge, 192 cores, gp3"]
+      NODE["EC2 spot node<br/>c7a.48xlarge, 192 cores, gp3"]
     end
   end
 
@@ -218,8 +218,16 @@ The production run is the only large item. The reference run costs about
 38–76 hours depending on how much faster a Genoa core is than the reference
 cluster's — 113–226 USD on c7a.48xlarge, 142–285 USD on m7a.48xlarge.
 
-m7a is the planning default despite costing 26% more per core: the reference
-run reports 438.5 GB of memory across its nodes, and c7a.48xlarge has 384 GiB.
+c7a.48xlarge is the planning default, on a measurement rather than a
+projection. A full resolution 192 rank run measured 136 GiB across the node
+on 2026-08-20, 35% of c7a's 384 GiB. The reference run's 438.5 GB is a
+scheduler high water mark over 480 ranks on 12 nodes, which duplicates far
+more ghost zones than one node at 192 does. m7a.48xlarge (768 GiB) is the
+fallback.
+
+The hours are still an extrapolation from the reference run's core-hours:
+sec/iter at full resolution has not been measured, and that is now the
+largest open number in the budget.
 Which one actually runs Phase 6 is decided by the Phase 5 measurement, not
 assumed here. See
 [docs/architecture.md](docs/architecture.md#choosing-the-instance-type).

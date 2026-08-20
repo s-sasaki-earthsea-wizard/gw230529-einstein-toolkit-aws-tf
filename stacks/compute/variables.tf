@@ -115,7 +115,7 @@ variable "checkpoint_generations_kept" {
     Two, not one. The newest generation is the restart point; the one behind
     it is what Cactus falls back to through recover = "autoprobe" if the
     newest turns out unreadable, without going back to S3 for it. At the
-    production 78 GB per generation that is 156 GB of the 500 GB volume.
+    measured 85.7 GB per generation that is 171 GB of the 500 GB volume.
 
     This also bounds S3, which the slot rotation alone does not: the sidecar
     mirrors the whole checkpoint directory into a slot, so residency is two
@@ -137,20 +137,24 @@ variable "instance_type" {
     EC2 instance type.
 
       Phase 4  c7a.2xlarge   ops rehearsal with a dummy payload, a few USD
-      Phase 5  m7a.48xlarge  full resolution measurement, go/no-go
-      Phase 6  m7a.48xlarge  production run, or c7a.48xlarge if Phase 5
-                             measures the working set well clear of 384 GiB
+      Phase 5  c7a.48xlarge  full resolution, throughput measurement
+      Phase 6  c7a.48xlarge  production run
 
     c7a.2xlarge has 16 GiB, which is why Phase 4 runs with run_mode =
     "ops-rehearsal" rather than a real evolution -- see that variable.
 
-    m7a leads because memory is the open question, not price. The reference
-    run reports 438.5 GB across its 12 nodes at 480 ranks; a 192 rank run
-    duplicates fewer ghost zones and needs less, but not proportionally less,
-    and c7a.48xlarge's 384 GiB is not a comfortable ceiling against that.
-    c7a.48xlarge is 20% cheaper per physical core and is the better choice
-    the moment Phase 5 shows it fits. r7a.48xlarge (1536 GiB, 42% dearer per
-    core than c7a) is the escape hatch if 768 GiB is short too.
+    Memory was the open question and it is now measured, not projected. A
+    full resolution 192 rank run at 8 refinement levels reported 125.273
+    GByte from Carpet and 136 GiB across the whole node, on 2026-08-20. That
+    is 35% of c7a.48xlarge's 384 GiB, which settles what the reference run's
+    438.5 GB across 12 nodes and 480 ranks left ambiguous: that figure is a
+    scheduler's high water mark over a decomposition duplicating far more
+    ghost zones, not a floor on what 192 ranks need.
+
+    So c7a.48xlarge, which is 20% cheaper per physical core -- 113-226 USD
+    over the estimated run length against 142-285. m7a.48xlarge (768 GiB) is
+    the fallback if a merger-time regrid turns out to grow the working set by
+    more than the 2.8x headroom, and r7a.48xlarge (1536 GiB) behind it.
 
     Do NOT substitute c7i.48xlarge on price. Its 192 vCPUs are 96 physical
     Sapphire Rapids cores plus hyperthreading, against 192 real cores with
@@ -162,7 +166,7 @@ variable "instance_type" {
     run fits into, and costs 31% more per physical core than the 48xlarge.
   EOT
   type        = string
-  default     = "m7a.48xlarge"
+  default     = "c7a.48xlarge"
 }
 
 variable "availability_zone" {
@@ -190,10 +194,10 @@ variable "root_volume_size_gb" {
   description = <<-EOT
     Size of the gp3 root volume.
 
-    Phase 2 measured a 25 GB checkpoint at dx=28, which extrapolates to about
-    78 GB at the dx=19.2 production resolution. At checkpoint_generations_kept
-    = 2 that is 156 GB resident, leaving roughly 340 GB for diagnostic output
-    at the 500 GB default. Revisit if the output volume turns out larger.
+    A full resolution checkpoint measured 85.7 GB on 2026-08-20 -- 192 files,
+    one per rank. At checkpoint_generations_kept = 2 that is 171 GB resident,
+    leaving roughly 320 GB for diagnostic output at the 500 GB default.
+    Revisit if the output volume turns out larger.
 
     The headroom depends on the sidecar pruning, not on the parfile. Phase 2
     found IO::checkpoint_keep prunes within a run but not across restarts, so
