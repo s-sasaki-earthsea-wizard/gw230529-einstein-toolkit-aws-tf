@@ -25,6 +25,28 @@ mpi_procs            = 8
 rehearsal_payload_gb = 25
 root_volume_size_gb  = 100
 
+# Two things get rehearsed and they want different settings, so run it twice
+# rather than compromising on one profile.
+#
+# Throughput -- does a real checkpoint sync fit inside the interval? Wants the
+# 25 GB above, which is what Phase 2 measured at dx=28. Measured 2026-08-20:
+# 25 GB pushed in 28 seconds, comfortably inside a 5 minute tick.
+#
+# Pruning -- does the volume stay bounded when generations accumulate? Wants
+# many generations, and the size of each is irrelevant to the logic. Drop the
+# payload and shorten the interval and the whole thing runs in about 20
+# minutes for a few cents:
+#
+#   run_name                    = "phase4-prune"
+#   rehearsal_payload_gb        = 1
+#   rehearsal_generations       = 6
+#   sync_interval_minutes       = 2
+#
+# Use a fresh run_name for it. Reusing one means the node restores that run's
+# CURRENT at boot, which is a different test and muddles this one.
+rehearsal_generations       = 5
+checkpoint_generations_kept = 2
+
 # ------------------------------------------------------------------
 # Phase 5-6: full resolution
 #
