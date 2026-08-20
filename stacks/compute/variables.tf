@@ -84,6 +84,54 @@ variable "rehearsal_payload_gb" {
   default     = 25
 }
 
+variable "rehearsal_generations" {
+  description = <<-EOT
+    How many synthetic checkpoint generations ops-rehearsal mode writes, one
+    after another, without deleting the previous one.
+
+    Accumulation is the point. Cactus does not remove the previous generation
+    either -- IO::checkpoint_keep prunes within a run but not across restarts,
+    and Phase 2 was left with three generations and 77 GB after two runs. A
+    rehearsal that tidied up after itself would exercise the slot rotation but
+    never the pruning, which is the part that decides whether a 500 GB volume
+    survives a run resumed a few times.
+
+    Set this above checkpoint_generations_kept or the pruning never fires.
+  EOT
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.rehearsal_generations >= 1
+    error_message = "rehearsal_generations must be at least 1."
+  }
+}
+
+variable "checkpoint_generations_kept" {
+  description = <<-EOT
+    Generations of checkpoint the sidecar leaves on the local volume after a
+    successful push to S3.
+
+    Two, not one. The newest generation is the restart point; the one behind
+    it is what Cactus falls back to through recover = "autoprobe" if the
+    newest turns out unreadable, without going back to S3 for it. At the
+    production 78 GB per generation that is 156 GB of the 500 GB volume.
+
+    This also bounds S3, which the slot rotation alone does not: the sidecar
+    mirrors the whole checkpoint directory into a slot, so residency is two
+    slots times whatever is on disk. Unpruned, a run resumed a few times
+    reaches six generations, fills the volume at 468 GB, and puts 936 GB in
+    the bucket.
+  EOT
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.checkpoint_generations_kept >= 1
+    error_message = "checkpoint_generations_kept must be at least 1."
+  }
+}
+
 variable "instance_type" {
   description = <<-EOT
     EC2 instance type.
@@ -143,9 +191,14 @@ variable "root_volume_size_gb" {
     Size of the gp3 root volume.
 
     Phase 2 measured a 25 GB checkpoint at dx=28, which extrapolates to about
-    78 GB at the dx=19.2 production resolution. With checkpoint_keep = 2 that
-    is 156 GB resident, leaving roughly 340 GB for diagnostic output at the
-    500 GB default. Revisit if the output volume turns out larger.
+    78 GB at the dx=19.2 production resolution. At checkpoint_generations_kept
+    = 2 that is 156 GB resident, leaving roughly 340 GB for diagnostic output
+    at the 500 GB default. Revisit if the output volume turns out larger.
+
+    The headroom depends on the sidecar pruning, not on the parfile. Phase 2
+    found IO::checkpoint_keep prunes within a run but not across restarts, so
+    an unpruned volume reaches six generations and 468 GB after a few resumes
+    and the run then dies for want of space.
   EOT
   type        = number
   default     = 500

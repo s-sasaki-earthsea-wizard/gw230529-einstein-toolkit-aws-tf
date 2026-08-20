@@ -89,6 +89,10 @@ resource "aws_launch_template" "node" {
     mpi_procs             = var.run_config.mpi_procs
     omp_threads           = var.run_config.omp_threads
     rehearsal_payload_gb  = var.run_config.rehearsal_payload_gb
+    rehearsal_generations = var.run_config.rehearsal_generations
+
+    checkpoint_generations_kept = var.run_config.checkpoint_generations_kept
+
     sync_interval_minutes = var.run_config.sync_interval_minutes
     auto_shutdown         = var.run_config.auto_shutdown
   }))

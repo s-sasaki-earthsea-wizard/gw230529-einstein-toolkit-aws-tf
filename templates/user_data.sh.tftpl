@@ -26,6 +26,8 @@ PARFILE="${parfile}"
 MPI_PROCS="${mpi_procs}"
 OMP_THREADS="${omp_threads}"
 REHEARSAL_PAYLOAD_GB="${rehearsal_payload_gb}"
+REHEARSAL_GENERATIONS="${rehearsal_generations}"
+CHECKPOINT_GENERATIONS_KEPT="${checkpoint_generations_kept}"
 SYNC_INTERVAL_MIN="${sync_interval_minutes}"
 AUTO_SHUTDOWN="${auto_shutdown}"
 
@@ -152,7 +154,9 @@ aws s3 sync "$${S3_RUN}/output/" "$${WORK_DIR}/simulations/" --only-show-errors
 # Double buffering. A push-only mirror of every checkpoint generation would
 # accumulate 76 generations over a 76 hour run -- 5.9 TB, roughly 31 USD until
 # the lifecycle rule expires it, which is 10% of the project budget. Writing
-# alternately into slot-a and slot-b holds S3 at two generations, about 156 GB.
+# alternately into slot-a and slot-b holds S3 at two slots' worth instead --
+# 312 GB at the default of two generations kept on the volume, since a push
+# mirrors the whole directory into a slot.
 #
 # TODO(phase5): this bounds S3 only. Phase 2 found that IO::checkpoint_keep
 # does not prune across runs -- two runs left three generations, 77 GB, on
@@ -176,6 +180,7 @@ export AWS_DEFAULT_REGION="$${AWS_REGION}"
 
 CKPT_DIR="$${WORK_DIR}/checkpoints"
 S3_CKPT="$${S3_RUN}/checkpoints"
+KEEP=$${CHECKPOINT_GENERATIONS_KEPT}
 
 # Diagnostic output first: cheap, additive, and never blocks a restart.
 # CHECKPOINTS is excluded as a guard: it should be empty on the host because
@@ -205,6 +210,34 @@ if [ -f "\$${STAMP}" ] && [ "\$(cat "\$${STAMP}")" = "\$${signature}" ]; then
   exit 0
 fi
 
+# Prune the local generations, before the push rather than after it.
+#
+# Safe because every generation dropped here is already in the slot that
+# CURRENT names: that slot was written by the previous tick and still holds
+# the set this volume had then. The restart point survives even if the push
+# below never completes.
+#
+# Doing it after the push instead would work too, but the slot would then
+# receive keep+1 generations every time and S3 residency would be half as
+# large again for nothing.
+#
+# Cactus will not do this for us. IO::checkpoint_keep prunes within a run but
+# not across restarts -- Phase 2 finished two runs with three generations and
+# 77 GB on disk. At the production 78 GB per generation a 500 GB volume fills
+# after six, which a run resumed a few times reaches, and the run then ends
+# for want of space rather than for want of budget.
+gens=\$(find "\$${CKPT_DIR}" -maxdepth 1 -name '*.h5' -printf '%f\n' 2>/dev/null \
+  | grep -oE 'it_[0-9]+' | sort -u -t_ -k2 -n || true)
+count=\$(printf '%s\n' "\$${gens}" | grep -c . || true)
+if [ "\$${count}" -gt "\$${KEEP}" ]; then
+  printf '%s\n' "\$${gens}" | head -n \$(( count - KEEP )) | while read -r g; do
+    [ -n "\$${g}" ] || continue
+    echo "pruning local generation \$${g}"
+    rm -f "\$${CKPT_DIR}"/*."\$${g}".*
+  done
+  echo "kept \$${KEEP} of \$${count} generations on disk"
+fi
+
 current=\$(aws s3 cp "\$${S3_CKPT}/CURRENT" - 2>/dev/null || true)
 if [ "\$${current}" = "slot-a" ]; then target=slot-b; else target=slot-a; fi
 
@@ -213,8 +246,12 @@ aws s3 sync "\$${CKPT_DIR}/" "\$${S3_CKPT}/\$${target}/" --delete --only-show-er
 
 # Only now is the slot known good.
 printf '%s' "\$${target}" | aws s3 cp - "\$${S3_CKPT}/CURRENT" --only-show-errors
-printf '%s' "\$${signature}" > "\$${STAMP}"
 echo "CURRENT is now \$${target}"
+# Recompute rather than reuse the signature taken above: pruning changed the
+# directory, and stamping the pre-prune set would leave the next tick seeing a
+# difference and pushing the same generations again.
+signature=\$(find "\$${CKPT_DIR}" -name '*.h5' -printf '%p %s %T@\n' 2>/dev/null | sort | sha256sum)
+printf '%s' "\$${signature}" > "\$${STAMP}"
 SYNC
 chmod +x /usr/local/bin/gw230529-sync
 
@@ -359,20 +396,31 @@ if [ "$${RUN_MODE}" = "ops-rehearsal" ]; then
   # to cope with. Cheap, interruptible at will, and it exercises every code
   # path that matters here.
   # ----------------------------------------------------------------
-  echo "ops-rehearsal: generating a $${REHEARSAL_PAYLOAD_GB} GB synthetic checkpoint set"
+  echo "ops-rehearsal: $${REHEARSAL_GENERATIONS} generations of $${REHEARSAL_PAYLOAD_GB} GB"
   per_file_mb=$(( REHEARSAL_PAYLOAD_GB * 1024 / MPI_PROCS ))
 
-  for generation in 1 2 3; do
+  # Long enough that every generation gets at least one sidecar tick, plus a
+  # minute so that a tick landing mid-write still has a later one to fall back
+  # on. Derived rather than fixed: a rehearsal tuning the sync interval down
+  # should not also have to remember to change this.
+  gen_wait=$(( SYNC_INTERVAL_MIN * 60 + 60 ))
+
+  for generation in $(seq 1 "$${REHEARSAL_GENERATIONS}"); do
     echo "rehearsal generation $${generation}: $${MPI_PROCS} files x $${per_file_mb} MB"
-    rm -f "$${WORK_DIR}"/checkpoints/*.h5
+
+    # No rm. Cactus leaves the previous generation in place, and accumulation
+    # is precisely what the sidecar's pruning exists to handle -- a rehearsal
+    # that tidied up after itself would exercise the slot rotation and never
+    # the pruning.
     for rank in $(seq 0 $(( MPI_PROCS - 1 ))); do
       dd if=/dev/urandom \
          of="$${WORK_DIR}/checkpoints/checkpoint.chkpt.it_$${generation}.file_$${rank}.h5" \
          bs=1M count="$${per_file_mb}" status=none
     done
     date -Is > "$${WORK_DIR}/simulations/$${RUN_NAME}/run/rehearsal.log"
-    echo "generation $${generation} written; waiting for the sidecar to push it"
-    sleep 600
+    echo "on disk after generation $${generation}: $(du -sh "$${WORK_DIR}/checkpoints" | cut -f1)"
+    echo "waiting $${gen_wait}s for the sidecar"
+    sleep "$${gen_wait}"
   done
   echo "ops-rehearsal complete"
 else

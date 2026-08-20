@@ -142,6 +142,12 @@ variable "run_config" {
     mpi_procs             MPI ranks; the reference run is pure MPI, OMP=1
     omp_threads           OpenMP threads per rank
     rehearsal_payload_gb  synthetic checkpoint size for ops-rehearsal mode
+    rehearsal_generations how many generations the rehearsal writes, keeping
+                          each one, so that the pruning has work to do
+    checkpoint_generations_kept
+                          generations left on the volume after a successful
+                          push; also bounds S3, since a push mirrors the whole
+                          directory into a slot
     sync_interval_minutes how often the sidecar timer syncs to S3
     auto_shutdown         terminate the instance when the run exits
   EOT
@@ -156,6 +162,10 @@ variable "run_config" {
     mpi_procs             = number
     omp_threads           = number
     rehearsal_payload_gb  = number
+    rehearsal_generations = number
+
+    checkpoint_generations_kept = number
+
     sync_interval_minutes = number
     auto_shutdown         = bool
   })

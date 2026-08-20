@@ -302,7 +302,18 @@ accumulate every checkpoint Cactus writes — 76 generations over a 76 hour run
 at hourly checkpoints, 5.9 TB, roughly 31 USD until the seven day lifecycle
 rule expires it. That is 10% of the project budget spent on copies nothing
 will ever read. The sidecar instead alternates between `checkpoints/slot-a/`
-and `checkpoints/slot-b/`, holding S3 at about 156 GB.
+and `checkpoints/slot-b/`.
+
+That bounds the growth but not the size, and the two are easy to conflate. A
+push mirrors the whole checkpoint directory into a slot, so S3 residency is
+two slots times the generations sitting on the volume — 312 GB at the default
+`checkpoint_generations_kept = 2`, not the 156 GB that one generation per slot
+would give. What holds it there is the sidecar pruning the volume after every
+successful push, which Cactus does not do for itself: `IO::checkpoint_keep`
+prunes within a run and not across restarts, and Phase 2 ended two runs with
+three generations and 77 GB still on disk. Unpruned at production size, six
+generations fill the 500 GB volume and put 936 GB in the bucket, and it is the
+volume filling that ends the run.
 
 **A `CURRENT` marker, not a timestamp, decides what gets restored.** Uploading
 78 GB takes minutes, so an instance reclaimed mid-upload leaves a torn set in
@@ -351,7 +362,7 @@ and worth knowing:
 | --- | --- |
 | PUT requests, one 78 GB checkpoint (192 rank files, 8 MB parts) | ~0.05 USD |
 | PUT requests, 76 hourly checkpoints | ~3.8 USD |
-| Storage, two slots at 156 GB for a week | ~0.84 USD |
+| Storage, two slots at 156 GB each for a week | ~1.7 USD |
 
 ## What the node needs that the image does not carry
 

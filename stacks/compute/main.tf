@@ -59,6 +59,10 @@ module "spot_node" {
     mpi_procs             = var.mpi_procs
     omp_threads           = var.omp_threads
     rehearsal_payload_gb  = var.rehearsal_payload_gb
+    rehearsal_generations = var.rehearsal_generations
+
+    checkpoint_generations_kept = var.checkpoint_generations_kept
+
     sync_interval_minutes = var.sync_interval_minutes
     auto_shutdown         = var.auto_shutdown
   }

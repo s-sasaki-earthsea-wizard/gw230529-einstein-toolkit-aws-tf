@@ -75,8 +75,11 @@ flowchart LR
 ```
 
 Checkpoints alternate between `checkpoints/slot-a/` and `checkpoints/slot-b/`,
-which holds S3 at about 156 GB instead of the 5.9 TB a push-only mirror would
-accumulate over a 76 hour run. `CURRENT` is written only after an upload
+which holds S3 at about 312 GB instead of the 5.9 TB a push-only mirror would
+accumulate over a 76 hour run. A push mirrors the whole checkpoint directory
+into a slot, so the sidecar also prunes the volume to two generations after
+each successful push — without that the volume fills at six generations and
+ends the run, which Cactus will not prevent on its own. `CURRENT` is written only after an upload
 returns success, so a node reclaimed mid-upload leaves a torn set that restore
 will not select — a timestamp would have picked exactly that set, because it
 is the newest.
