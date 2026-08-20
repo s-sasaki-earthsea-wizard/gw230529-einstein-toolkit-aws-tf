@@ -34,6 +34,14 @@ override.tf.json
 *.ppk
 
 # ============================================================
+# Upstream Einstein Toolkit gallery artefacts
+# ============================================================
+# Fetched by `make fetch-inputs`, never committed. They are upstream material
+# that this project uses but does not redistribute; the repository keeps only
+# the URLs and their checksums, in scripts/fetch_inputs.sh.
+upstream/
+
+# ============================================================
 # Claude session notes (not versioned)
 # ============================================================
 .claude-notes/

@@ -9,8 +9,8 @@
 #   compute     the spot instance. Created for a run, destroyed after.
 #
 # Ordinary flow:  make setup -> check-permissions -> bootstrap -> foundation
-#                 -> check-alerts -> push-image -> upload-inputs
-#                 -> run -> ssm -> stop
+#                 -> check-alerts -> push-image -> fetch-inputs
+#                 -> upload-inputs -> run -> ssm -> stop
 
 # Load .env when present (AWS_PROFILE, AWS_REGION, scout settings).
 ifneq (,$(wildcard .env))
@@ -22,10 +22,15 @@ TF := terraform
 LOCAL_IMAGE ?= gw230529-et:local
 IMAGE_TAG ?= latest
 
-# Where the Einstein Toolkit gallery artefacts live locally. They are fetched,
-# not redistributed, so the simulation repository keeps them in a gitignored
-# upstream/ directory.
-INPUTS_DIR ?= ../gw230529-einstein-toolkit/upstream
+# Where the Einstein Toolkit gallery artefacts live locally. `make
+# fetch-inputs` downloads them here from the gallery, checksum-pinned; the
+# directory is gitignored because the files are upstream material that this
+# project uses but does not redistribute.
+#
+# It used to default into the simulation repository's checkout, which quietly
+# made a production run impossible from a standalone clone. Point INPUTS_DIR
+# back at any directory that already holds them to skip the download.
+INPUTS_DIR ?= upstream
 
 # Share one copy of the provider plugins across all three stacks. The AWS
 # provider is ~840 MB; without this, each stack keeps its own copy under
@@ -125,23 +130,13 @@ output-%: ## Show a stack's outputs, e.g. make output-foundation
 
 ##@ Image and inputs
 
+.PHONY: fetch-inputs
+fetch-inputs: ## Download the gallery parfile and FUKA initial data (checksum pinned)
+	@INPUTS_DIR="$(INPUTS_DIR)" scripts/fetch_inputs.sh $(ARGS)
+
 .PHONY: upload-inputs
-upload-inputs: ## Upload the parfile and FUKA initial data to the data bucket
-	@test -d "$(INPUTS_DIR)" || \
-		{ echo "INPUTS_DIR=$(INPUTS_DIR) not found -- fetch the gallery artefacts first"; exit 1; }
-	@bucket=$$($(TF) -chdir=stacks/foundation output -raw data_bucket) && \
-	echo "Uploading four gallery artefacts (~1.6 MB) to s3://$$bucket/inputs/" && \
-	echo "These are upstream Einstein Toolkit files: not committed, not in the image." && \
-	aws s3 cp "$(INPUTS_DIR)/bhns_gw230529.par" "s3://$$bucket/inputs/" && \
-	aws s3 cp "$(INPUTS_DIR)/bhns_gw230529_ID/" "s3://$$bucket/inputs/" \
-		--recursive --exclude '*' \
-		--include '*.info' --include '*.dat' --include 'gam2.polytrope' && \
-	echo "" && \
-	echo "Check the parfile carries the spot settings before a production run:" && \
-	echo "  IO::checkpoint_ID                   = \"yes\"" && \
-	echo "  IO::checkpoint_every_walltime_hours = 1.0" && \
-	echo "  IO::checkpoint_keep                 = 2" && \
-	echo "  IO::recover                         = \"autoprobe\""
+upload-inputs: ## Derive the cloud parfile, check it, and upload it with the initial data
+	@INPUTS_DIR="$(INPUTS_DIR)" TF="$(TF)" scripts/upload_inputs.sh
 
 .PHONY: push-image
 push-image: ## Push the locally built Einstein Toolkit image to ECR

@@ -377,15 +377,32 @@ fetched at boot. Baking them into the image would also put upstream
 copyrighted data inside ECR, where a mis-set repository visibility becomes a
 licensing problem rather than an inconvenience.
 
-Upload them with `make upload-inputs`. The uploaded parfile must already carry
-the spot-oriented settings — the node does not rewrite it:
+`make fetch-inputs` downloads them from the gallery against pinned SHA-256
+sums, into a gitignored `upstream/`. Fetching rather than reaching into the
+simulation repository's checkout is what lets a standalone clone of this
+repository do a production run; it also starts from the pristine `.info`,
+whose EOS path is still the upstream `/path/to/` placeholder the node's
+boot-time rewrite is written against, rather than from a copy with some
+other machine's absolute path already edited in.
+
+`make upload-inputs` derives the cloud parfile rather than uploading the
+gallery one unchanged. The gallery file targets COSMA8, whose jobs are capped
+at 30 hours, so its 29 hour checkpoint interval costs nothing there and would
+cost 14.5 hours of lost work per interruption here. Two settings are rewritten
+and two are asserted:
 
 ```
-IO::checkpoint_ID                   = "yes"
-IO::checkpoint_every_walltime_hours = 1.0
-IO::checkpoint_keep                 = 2
-IO::recover                         = "autoprobe"
+IO::checkpoint_every_walltime_hours   29 -> 1.0    rewritten
+IO::checkpoint_ID                 absent -> "yes"  rewritten (the default is "no")
+IO::recover                         = "autoprobe"  asserted
+IO::checkpoint_keep                 = 2            asserted
 ```
+
+The two asserted settings the gallery already gets right; checking them anyway
+means an upstream change surfaces at upload time rather than at 3 USD/hour.
+Nothing is uploaded unless all four hold — a `sed` that silently matches
+nothing is the failure this is guarding against, the same hazard the node
+guards against when it aborts on a failed `eosfile` rewrite.
 
 `checkpoint_ID` is the one that matters most. Phase 2 measured the FUKA
 initial data import at 24.9 minutes locally, and it parallelises only over MPI
@@ -473,6 +490,7 @@ and neither can prevent anything: AWS billing data lags 8–24 hours.
 | Spot vCPU service quota defaults far below 192 | Raise it before Phase 5; approval takes hours to days. `make region-scout` reports the current value. |
 | `InsufficientInstanceCapacity` on a 192 vCPU request | Vary `availability_zone` first — only zones listed in foundation's `availability_zones` are reachable — then `instance_type` across m7a / c7a / r7a .48xlarge. Not c7i: it is half the machine at twice the price per real core. |
 | Deep Archive bills a 180 day minimum | `artifacts/` transitions after a delay, so a bad run can be deleted before it is archived. |
+| The gallery parfile is unfit for spot as shipped | `make upload-inputs` derives the cloud variant and refuses to upload one missing any of the four settings a reclaimed run needs. |
 | SNS subscriptions start unconfirmed, and can be deleted later by one click on any unsubscribe link | Follow "Confirm subscription" in both mails after the first apply, and note that the Terraform resource survives an unsubscribe, so nothing reports the loss. `make check-alerts` tests delivery; `make run` refuses to start billing when either topic is disarmed. |
 | A budget filtered on an unactivated cost allocation tag never fires | `cost_allocation_tag` defaults to null, giving an account-wide budget. |
 | Region is effectively permanent | ECR and S3 are region-bound; re-pushing means moving 5–8 GB. Decide with `make region-scout` before the first apply. |

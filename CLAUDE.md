@@ -283,6 +283,32 @@ sibling repo の Phase 1 (Docker ビルド) / Phase 2 (ローカル smoke) か�
 - provider は `~> 6.0` で固定、`.terraform.lock.hcl` はコミットする
 - コミット前に `make check` (fmt-check + validate + check-secrets)
 
+### 上流ギャラリー成果物の扱い (2026-08-20 決定)
+
+parfile と FUKA 初期データ (4 ファイル 1.6 MB) は **本 repo が自分で取得する**。
+以前は `INPUTS_DIR` が `../gw230529-einstein-toolkit/upstream` を指していたが、
+これだと**本 repo を単独 clone したマシンで production run ができない**うえ、
+その依存がどこにも宣言されていなかった。
+
+- `make fetch-inputs` — ギャラリーから取得。**SHA-256 で pin**。
+  落とし先 `upstream/` は gitignore。repo が持つのは **URL と checksum だけ**で、
+  これは再配布ではなく出典の記録
+- `make upload-inputs` — **上流 parfile をそのままは上げない**。COSMA8 向けの
+  `checkpoint_every_walltime_hours = 29` は spot だと中断 1 回で 14.5 時間の損失。
+  クラウド用に 2 行を書き換え、4 設定を検査してから S3 へ
+
+| キー | 上流 | クラウド | 扱い |
+| --- | --- | --- | --- |
+| `checkpoint_every_walltime_hours` | 29 | **1.0** | 書き換え |
+| `checkpoint_ID` | 記述なし (既定 "no") | **"yes"** | 追加 |
+| `recover` | "autoprobe" | 同 | 検査のみ |
+| `checkpoint_keep` | 2 | 同 | 検査のみ |
+
+- 上流ファイルは無改変で残し、派生を `upstream/.cloud/` に作る
+- 検査に落ちたら**何も上げない**。sed が黙って空振りするのが最悪なので、
+  `.info` の `eosfile` 書き換えと同じ fail-fast 規律を通す
+- sibling 側は何も変えなくてよい。クラウド用設定は本 repo の責任
+
 ### 秘匿情報の扱い
 
 gitignore 済み: `*.tfvars` / `*.tfstate*` / `backend.hcl` / `.env` / `.terraform/`

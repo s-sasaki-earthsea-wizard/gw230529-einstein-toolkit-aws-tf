@@ -106,6 +106,8 @@ modules/
 templates/
   user_data.sh.tftpl   Node bootstrap: pull image, restore state, sync, self-terminate
 scripts/
+  fetch_inputs.sh      Download the gallery artefacts, checksum pinned
+  upload_inputs.sh     Derive the cloud parfile, check it, upload it
   region_scout.sh      Compare regions on spot score, price and vCPU quota
   check_permissions.sh Simulate every IAM action the stacks need, creating nothing
   check_secrets.sh     Fail if a tracked file carries an account id or ARN
@@ -150,7 +152,8 @@ make init-foundation && make apply-foundation
 make check-alerts      # and verify the alerts can actually be delivered
 
 make push-image        # push the locally built Einstein Toolkit image to ECR
-make upload-inputs     # upload the parfile and FUKA initial data to the bucket
+make fetch-inputs      # download the gallery parfile and FUKA initial data
+make upload-inputs     # derive the cloud parfile from it and upload
 
 make init-compute
 make run               # launch the spot node
@@ -158,12 +161,21 @@ make ssm               # open a shell on it
 make stop              # terminate it
 ```
 
-`upload-inputs` is not optional for a simulation run. The parfile and the FUKA
-initial data are Einstein Toolkit gallery artefacts, so they are neither
-committed here nor baked into the container image; the node fetches them from
-the private bucket at boot. See
-[docs/architecture.md](docs/architecture.md#what-the-node-needs-that-the-image-does-not-carry)
-for the parfile settings the uploaded copy must already carry.
+`fetch-inputs` and `upload-inputs` are not optional for a simulation run. The
+parfile and the FUKA initial data are Einstein Toolkit gallery artefacts, so
+they are neither committed here nor baked into the container image; this
+repository keeps only their URLs and checksums, `fetch-inputs` downloads them
+into a gitignored `upstream/`, and the node reads them from the private bucket
+at boot.
+
+`upload-inputs` does not upload the gallery parfile as it stands. That file is
+written for COSMA8, where a checkpoint every 29 hours is free because jobs are
+capped at 30; on a spot instance it would cost 14.5 hours of lost work per
+interruption. The cloud variant is derived from it — hourly checkpoints, and
+`checkpoint_ID` turned on so an interruption does not re-import the FUKA data
+— and the result is checked for the four settings a run needs to survive being
+reclaimed. If any of them is wrong, nothing is uploaded. See
+[docs/architecture.md](docs/architecture.md#what-the-node-needs-that-the-image-does-not-carry).
 
 Phase 4 is different: it runs `run_mode = "ops-rehearsal"`, which does no
 physics at all and needs no inputs. A 16 GiB instance cannot hold any grid
