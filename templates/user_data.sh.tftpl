@@ -526,6 +526,14 @@ else
   # ----------------------------------------------------------------
   echo "simulation: $${IMAGE} parfile=$${PARFILE} np=$${MPI_PROCS} omp=$${OMP_THREADS}"
 
+  # Cactus stdout is the run's primary instrument -- sec/iter, the memory
+  # figures, and every Carpet warning appear there and nowhere else. Left as
+  # it is it would reach only /var/log on a machine that exists to be
+  # reclaimed, so it is teed into the run directory where the output sync
+  # ships it to S3 on the same timer as everything else.
+  #
+  # Appending, not truncating: a run resumed after an interruption should read
+  # as one log.
   docker run --rm \
     --shm-size=8g \
     -e OMP_NUM_THREADS="$${OMP_THREADS}" \
@@ -534,7 +542,8 @@ else
     -v "$${WORK_DIR}/inputs:$${C_INPUTS}:ro" \
     -w "$${C_RUN_DIR}" \
     "$${IMAGE}" \
-    mpirun.mpich -np "$${MPI_PROCS}" "$${CACTUS_EXE}" "$${C_INPUTS}/$${PARFILE}" \
+    mpirun.mpich -np "$${MPI_PROCS}" "$${CACTUS_EXE}" "$${C_INPUTS}/$${PARFILE}" 2>&1 \
+    | tee -a "$${WORK_DIR}/simulations/$${RUN_NAME}/run/cactus-stdout.log" \
     || RUN_STATUS=$?
 
   echo "simulation exited with status $${RUN_STATUS}"
