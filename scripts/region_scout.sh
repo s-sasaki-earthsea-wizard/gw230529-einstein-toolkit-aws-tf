@@ -29,7 +29,7 @@ if [ -f "${REPO_ROOT}/.env" ]; then
 fi
 
 SCOUT_REGIONS="${SCOUT_REGIONS:-us-east-1 us-east-2 us-west-2}"
-SCOUT_INSTANCE_TYPES="${SCOUT_INSTANCE_TYPES:-c7a.48xlarge m7a.48xlarge c7i.48xlarge}"
+SCOUT_INSTANCE_TYPES="${SCOUT_INSTANCE_TYPES:-m7a.48xlarge c7a.48xlarge r7a.48xlarge}"
 SCOUT_TARGET_VCPUS="${SCOUT_TARGET_VCPUS:-192}"
 
 # The API region only routes the call; the scores cover every listed region.

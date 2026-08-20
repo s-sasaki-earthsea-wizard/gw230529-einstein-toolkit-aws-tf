@@ -18,7 +18,7 @@ ECR (ET イメージ配布)、およびコストガードレールを Terraform 
 | リージョン | 起動ごとの選択はしない。**1 回決めて固定** | ECR/S3 がリージョン束縛。移動 = 5–8 GB 再 push |
 | リージョン | **us-west-2 に確定 (2026-08-19 実測)** | 下記「リージョン選定の実測結果」 |
 | AZ | **us-west-2d (`usw2-az4`)**、次点 `us-west-2a` → `us-west-2c` | placement score 9 かつ c7a.48xlarge が最安 |
-| インスタンス | **c7a.48xlarge**。フォールバックは m7a.48xlarge | c7i は 192 vCPU = 物理 96 コア + HT、メモリ 8ch。実質半分の機械 |
+| インスタンス | **m7a.48xlarge が既定**。Phase 5 の実測次第で c7a.48xlarge | 参照 run のメモリ実測 438.5 GB に対し c7a の 384 GiB は余裕が無い。下記「インスタンス選定の再評価」 |
 | state backend | S3 + native lockfile (`use_lockfile`) | DynamoDB テーブルが不要になる |
 | S3 構成 | 1 バケット + prefix 別 lifecycle | バケット分割は分離を買わずポリシー面だけ増える |
 | ネットワーク | public subnet + IGW + S3 Gateway Endpoint | private + NAT は月 33 USD、予算の 11% |
@@ -27,7 +27,8 @@ ECR (ET イメージ配布)、およびコストガードレールを Terraform 
 
 ### リージョン選定の実測結果 (2026-08-19、`make region-scout`)
 
-target 192 vCPU / single-AZ / c7a・m7a・c7i の 48xlarge で計測。
+target 192 vCPU / single-AZ / c7a・m7a・c7i の 48xlarge で計測 (当時の候補リスト。
+2026-08-20 に m7a・c7a・r7a へ入れ替えた。下記「インスタンス選定の再評価」)。
 
 | リージョン | score 9 の AZ 数 | c7a.48xlarge 最安 | spot vCPU クォータ |
 | --- | --- | --- | --- |
@@ -36,7 +37,7 @@ target 192 vCPU / single-AZ / c7a・m7a・c7i の 48xlarge で計測。
 | us-east-2 | 3 中 2 (1 つは 6) | 2.572 USD/h | **5** |
 
 - **us-east-2 は脱落**。約 15% 安いがクォータが 5。緩和申請の承認待ち
-  (数時間〜数日) に見合う差ではない (30 時間 run で約 13 USD)
+  (数時間〜数日) に見合う差ではない (76 時間 run で約 30 USD)
 - **us-west-2 を採用**。容量では差がつかない (どちらも score 9、クォータ済み)。
   決め手は**フォールバック AZ の価格が近い**こと:
   us-west-2 は 2.97 → 3.05 → 3.32、us-east-1 は 2.996 → 3.49 → 3.52。
@@ -62,22 +63,81 @@ foundation の変数として渡す方式に変更。`az_count` は null 時の�
 - **リストの順序は CIDR に効く**。subnet の CIDR はリスト位置から
   `cidrsubnet` で決まるので、並べ替えると全 subnet が replace される。追加は安全
 
+### インスタンス選定の再評価 (2026-08-20)
+
+sibling repo が公開リファレンス出力 (`bhns_gw230529.out` の Carpet ログと
+SLURM エピローグ) を直読みして数値を訂正した。**本 repo が使っていた
+「256 コア / 30 時間 / 140 GB」は 3 つとも誤り**だった。
+
+| 項目 | 旧 (本 repo の記述) | 実測 (2026-08-20) |
+| --- | --- | --- |
+| 並列度 | 256 cores | **480 rank** (12 ノード × 40 コア) |
+| 実行時間 | 30 時間 | 46.4 h で t=3041 M / t=2000 M まで約 30.5 h |
+| core-hours | — | **約 14,600 core-hours** (t=2000 M) |
+| メモリ | 140 GB | **438.5 GB** (12 ノード合計、SLURM 申告) |
+| 速度 | — | 3.30 sec/iter (dt = 0.06 M) |
+| 合体時刻 | — | t ≈ 713 M (ψ4 ピーク 1213 M − 抽出半径 500 M) |
+
+140 GB の出所は sibling 側でも特定できず、**もう使わない**ことにした。
+
+**メモリが律速で、価格ではない。** 438.5 GB は 480 rank 時の全ノード合計。
+192 rank なら ghost zone の重複が減るぶん下がるが、chunk の体積が 2.5 倍でも
+線寸は 1.36 倍にしかならず、ghost 比は線寸に従うので下げ幅は弱い。
+SLURM の値を一番甘く 10 進 GB (= 408 GiB) と読んでも、**削減を当てる前から
+c7a.48xlarge の 384 GiB を超えている**。
+
+物理コア単価 (us-west-2d spot、2026-08-20 実測):
+
+| タイプ | 物理コア | メモリ | ch | USD/h | USD/物理コア時 |
+| --- | --- | --- | --- | --- | --- |
+| c7a.48xlarge | 192 Genoa 3.7 GHz | 384 GiB | 12 | 2.978 | **0.0155** |
+| m7a.48xlarge | 192 Genoa 3.7 GHz | 768 GiB | 12 | 3.747 | 0.0195 |
+| r7a.48xlarge | 192 Genoa 3.7 GHz | 1536 GiB | 12 | 4.220 | 0.0220 |
+| c7i.48xlarge | 96 SPR 3.2 GHz + HT | 384 GiB | 8 | 3.072 | 0.0320 |
+| c7a.24xlarge | 96 Genoa 3.7 GHz | 192 GiB | 12 | 1.950 | 0.0203 |
+
+- **m7a.48xlarge を既定にした**。768 GiB が単一ノードで唯一余裕のある値。
+  コア単価 +26% は OOM で run を失うリスクに対して安い保険
+- **c7a.48xlarge はコア単価最良**。Phase 5 が working set を 384 GiB から
+  十分下回ると実測したときだけ本番タイプに昇格する
+- **r7a.48xlarge (1536 GiB) を scout に追加**。768 GiB でも足りなかった場合の逃げ道
+- **c7i.48xlarge を scout から除外**。時間単価が c7a の 3% 差に見えるのが罠で、
+  物理コア単価は **2.06 倍**。メモリ 8ch / 3.2 GHz も不利。
+  これ以上測っても比は変わらないので候補から落とした
+- **小さくする案は成立しない**。c7a.24xlarge は 192 GiB でフル解像度が載らず、
+  しかも 48xlarge より物理コア単価が 31% 高い
+
+**コスト見積り**: 14,600 core-hours ÷ 192 コア = 参照ノードと per-core 同等なら
+76 時間。Genoa 3.7 GHz / DDR5 12ch で 1.5–2 倍と見て **38–76 時間**:
+
+| | 38 h | 51 h | 76 h |
+| --- | --- | --- | --- |
+| c7a.48xlarge @ 2.978 | 113 USD | 152 USD | 226 USD |
+| m7a.48xlarge @ 3.747 | 142 USD | 190 USD | **285 USD** |
+
+悲観端 (m7a × 参照同等) は 300 USD 枠を使い切る。逃げ道は
+**合体が t≈713 M なので 2000 M ではなく ~1500 M で打ち切る** (約 25% 節約、
+ringdown は余裕で収まる)。ただしこれは物理側の判断なので Phase 5 の実測待ち。
+
+本 repo の run 長依存の数値 (checkpoint 世代数、S3 常駐量、gp3 スループット費)
+は**すべて悲観側の 76 時間で見積もり直した**。
+
 ### checkpoint 同期の設計 (2026-08-20 決定)
 
 本体 repo の Phase 2 実測 (checkpoint 25 GB @ dx=28 → フル解像度 78 GB) を
 受けて確定。詳細は `docs/architecture.md`「Checkpoint synchronisation」。
 
 - **slot-a / slot-b の 2 面交互書き + `CURRENT` マーカー**。
-  push-only mirror だと 60 世代 = 4.7 TB / 約 25 USD (予算の 8%) 溜まる。
+  push-only mirror だと 76 世代 = 5.9 TB / 約 31 USD (予算の 10%) 溜まる。
   2 面なら 156 GB 固定
 - **`CURRENT` はアップロード成功後にのみ書く**。78 GB の転送中に中断されると
   S3 に不完全なセットが残り、`recover = autoprobe` は「最新だから」それを
   選んでしまう。タイムスタンプではなくマーカーで復元先を決めるのはこのため
 - **checkpoint 1 時間 / sync 5 分**。78 GB の書き込みは全 rank を 78 秒
   止めるので、間隔を半分にすると wall clock の 4.3% を失う。
-  30h run で確定 38 分の節約 vs 中断 1 回あたり約 15 分の追加ロス
+  76h run で確定 約 1.6 時間の節約 vs 中断 1 回あたり約 15 分の追加ロス
 - **同一リージョンの転送料は 0**。残るのは PUT リクエスト (checkpoint 1 回
-  約 $0.05) と保管料 (156 GB × 3 日で約 $0.36) のみ
+  約 $0.05) と保管料 (156 GB × 1 週間で約 $0.84) のみ
 - sync は変更が無ければ LIST のみで終わるので、間隔を短くしても実質無料
 
 ### シミュレーション repo Phase 1–2 の実測を受けた対応 (2026-08-20)
@@ -143,8 +203,19 @@ sibling repo の Phase 1 (Docker ビルド) / Phase 2 (ローカル smoke) か�
 
 ### 未確定 / 保留
 
-- **checkpoint からの recover 実証** — シミュレーション repo 側で進行中。
-  ID import をスキップできることが実証されたら本 repo にも反映する
+- 【解消】**checkpoint からの recover 実証** — sibling の Phase 2 で完了。
+  `recover = "autoprobe"` が `it_256` を自動で拾い、**Kadath import 実行 0 回**。
+  recover 読み込み + 終了時 checkpoint で 94 秒、cold start の 2065 秒に対し
+  33 分の節約。spot 中断からの復帰は成立する
+- **【要対応】`IO::checkpoint_keep` は run をまたいで効かない** — sibling の
+  Phase 2 で 2 run 後に 3 世代 77 GB が残った。フル解像度は 1 世代 78 GB なので
+  `root_volume_size_gb = 500` は **6 世代で埋まる**。中断→再開を数回やれば届く。
+  slot 方式が固定するのは **S3 側だけ**で、EBS 側は別途刈る必要がある。
+  sidecar に「`CURRENT` が指す世代と書き込み中の世代以外を消す」処理を入れる。
+  `templates/user_data.sh.tftpl` に `TODO(phase5)` として記録済み
+- **【要対応】本番インスタンスタイプは Phase 5 のメモリ実測で確定する**。
+  np=192 で単一ノードに載らない場合、マルチノード MPI は
+  「学習目的の選択肢」から**必要条件**に格上げされる
 - **78 GB は dx=28 の 25 GB からの外挿**。フル解像度の実測は Phase 5 待ち。
   `root_volume_size_gb` と slot 設計はこの値に依存している
 - **IAM ユーザー `gw230529` に `policies/terraform-operator.json` を付与する**

@@ -32,9 +32,16 @@ root_volume_size_gb  = 100
 # fetched from the bucket, not baked into the image. Put the resolution in
 # run_name: checkpoint_dir is cwd relative, so runs sharing a parent directory
 # would let recover=autoprobe pick up the wrong resolution's checkpoint.
+#
+# m7a.48xlarge, not c7a.48xlarge: the reference run reports 438.5 GB across
+# its 12 nodes, and 384 GiB is not a comfortable ceiling against that even
+# after allowing for the fewer ghost zones a 192 rank decomposition
+# duplicates. c7a.48xlarge is 20% cheaper per physical core and is the better
+# choice as soon as Phase 5 measures the working set well clear of 384 GiB --
+# which is exactly what Phase 5 is for.
 # ------------------------------------------------------------------
 # run_mode            = "simulation"
-# instance_type       = "c7a.48xlarge"
+# instance_type       = "m7a.48xlarge"
 # run_name            = "phase6-production-dx19p2"
 # mpi_procs           = 192
 # root_volume_size_gb = 500

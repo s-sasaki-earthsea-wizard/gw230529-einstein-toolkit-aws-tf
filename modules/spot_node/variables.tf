@@ -21,23 +21,30 @@ variable "instance_type" {
     EC2 instance type.
 
     Phase 4 (ops loop rehearsal): c7a.2xlarge or similar.
-    Phase 5-6 (production):       c7a.48xlarge, 192 vCPU / 384 GiB.
+    Phase 5-6 (production):       m7a.48xlarge, 192 physical cores / 768 GiB.
 
     A 192 vCPU spot request is bounded by the "All Standard (A, C, D, H, I,
     M, R, T, Z) Spot Instance Requests" quota (L-34B43A08). A fresh account
     sits far below 192; `make region-scout` reports the current value per
     region and prints the request command.
 
+    m7a rather than c7a because memory, not price, is the open question: the
+    reference run reports 438.5 GB across its 12 nodes, and c7a.48xlarge's
+    384 GiB is not a comfortable ceiling against that. c7a.48xlarge is 20%
+    cheaper per core and becomes the production type only once Phase 5 has
+    measured the np=192 working set well clear of 384 GiB. r7a.48xlarge
+    (1536 GiB) is the escape hatch if 768 GiB is also short.
+
     If capacity is unavailable, apply fails with InsufficientInstanceCapacity.
-    Vary availability_zone first, then fall back to m7a.48xlarge -- same 192
-    physical AMD cores, more memory, 20-35% dearer.
+    Vary availability_zone first, then the instance type.
 
     c7i.48xlarge is not an equivalent substitute despite the similar vCPU
     count and price: 192 vCPUs there are 96 physical cores plus
-    hyperthreading, on 8 memory channels rather than 12.
+    hyperthreading, on 8 memory channels rather than 12, which works out at
+    0.0320 USD per physical core-hour against c7a's 0.0155.
   EOT
   type        = string
-  default     = "c7a.48xlarge"
+  default     = "m7a.48xlarge"
 }
 
 variable "subnet_id" {
@@ -81,8 +88,8 @@ variable "root_volume_throughput" {
     dx=19.2 production resolution. Reading 78 GB back for an S3 sync takes
     10.4 minutes at the 125 MB/s baseline and 1.3 minutes at 1000 MB/s.
 
-    The extra 875 MB/s bills at roughly 0.048 USD/h, about 1.4 USD across a
-    30 hour run -- immaterial next to a ~3 USD/h instance, and it is the
+    The extra 875 MB/s bills at roughly 0.048 USD/h, about 3.6 USD across a
+    76 hour run -- immaterial next to a ~3 USD/h instance, and it is the
     difference between a sync that fits inside the interval and one that does
     not.
 

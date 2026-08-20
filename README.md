@@ -28,7 +28,7 @@ flowchart LR
     end
 
     subgraph COMP["stacks/compute: one run, destroyed after"]
-      NODE["EC2 spot node<br/>c7a.48xlarge, 192 cores, gp3"]
+      NODE["EC2 spot node<br/>m7a.48xlarge, 192 cores, gp3"]
     end
   end
 
@@ -75,8 +75,8 @@ flowchart LR
 ```
 
 Checkpoints alternate between `checkpoints/slot-a/` and `checkpoints/slot-b/`,
-which holds S3 at about 156 GB instead of the 4.7 TB a push-only mirror would
-accumulate over a 30 hour run. `CURRENT` is written only after an upload
+which holds S3 at about 156 GB instead of the 5.9 TB a push-only mirror would
+accumulate over a 76 hour run. `CURRENT` is written only after an upload
 returns success, so a node reclaimed mid-upload leaves a torn set that restore
 will not select — a timestamp would have picked exactly that set, because it
 is the newest.
@@ -187,6 +187,17 @@ Two manual steps have no Terraform equivalent:
 
 Nothing in `stacks/foundation` bills by the hour, so the project can sit idle
 between phases without spending.
+
+The production run is the only large item. The reference run costs about
+14,600 core-hours to reach the target evolution time, which on 192 cores is
+38–76 hours depending on how much faster a Genoa core is than the reference
+cluster's — 113–226 USD on c7a.48xlarge, 142–285 USD on m7a.48xlarge.
+
+m7a is the planning default despite costing 26% more per core: the reference
+run reports 438.5 GB of memory across its nodes, and c7a.48xlarge has 384 GiB.
+Which one actually runs Phase 6 is decided by the Phase 5 measurement, not
+assumed here. See
+[docs/architecture.md](docs/architecture.md#choosing-the-instance-type).
 
 The budget alerts are after the fact — AWS billing data lags 8–24 hours. Real
 time containment comes from two places instead: the spot request is capped at

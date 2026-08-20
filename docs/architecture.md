@@ -7,9 +7,11 @@ repository](https://github.com/s-sasaki-earthsea-wizard/gw230529-einstein-toolki
 Constraints that shaped every decision:
 
 - **300 USD total budget.** Anything that bills by the hour while idle is out.
-- **Single spot node.** No multi-node, no EFA. The reference run is 256 cores
-  of pure MPI for 30 hours; a 192 vCPU instance is the closest single-machine
-  equivalent.
+- **Single spot node.** No multi-node, no EFA. The reference run is 480 ranks
+  of pure MPI across 12 nodes, about 14,600 core-hours to the target evolution
+  time; 192 physical cores on one machine is the closest single-node
+  equivalent, at 38–76 hours. Whether the working set fits in one node is
+  decided by Phase 5, not assumed here.
 - **S3 is the system of record.** EBS is scratch. A spot interruption must
   never lose more than one sync interval of work.
 - **No inbound ports.** Operations go through SSM Session Manager.
@@ -48,7 +50,7 @@ flowchart LR
       GWEP["S3 gateway endpoint"]
       SG["security group<br/>no inbound rules"]
       subgraph SUBNETS["public subnets, one per AZ"]
-        EC2["EC2 spot instance<br/>c7a.48xlarge, gp3 500 GB"]
+        EC2["EC2 spot instance<br/>m7a / c7a .48xlarge, gp3 500 GB"]
       end
     end
 
@@ -93,7 +95,9 @@ region-bound, so moving means re-pushing 5–8 GB and re-uploading every result.
 `make region-scout` produces the three numbers the decision rests on.
 
 Measured 2026-08-19, target capacity 192 vCPU, single availability zone,
-scored across c7a/m7a/c7i .48xlarge:
+scored across c7a/m7a/c7i .48xlarge. The candidate list has changed since —
+see "Choosing the instance type" below — but the regional conclusion has not,
+because every candidate is a 192 vCPU AMD Genoa part drawn from the same pool:
 
 | Region | Zones scoring 9 | Cheapest c7a.48xlarge | Spot vCPU quota |
 | --- | --- | --- | --- |
@@ -102,8 +106,10 @@ scored across c7a/m7a/c7i .48xlarge:
 | us-east-2 | 2 of 3, one at 6 | 2.572 USD/h (us-east-2a) | **5** |
 
 **us-east-2 is out**: cheapest by ~15%, but the spot vCPU quota is 5, and a
-quota increase takes hours to days to approve. Over a 30 hour run the saving
-is about 13 USD.
+quota increase takes hours to days to approve. Over a 76 hour run the saving
+is about 30 USD — real money against a 300 USD cap, but not worth putting the
+schedule behind a support ticket, and us-east-2 also scores 9 in only two of
+its three zones.
 
 **us-west-2 over us-east-1.** Capacity is not the differentiator — both score
 9 with the quota already raised. The averages across their viable zones are
@@ -127,24 +133,89 @@ zone and includes `us-west-2b` (`usw2-az1`), which scored nothing at all.
 Subnets are free, so the fallback costs nothing but capacity; it is a default,
 not a placement decision.
 
-### Why c7a and not c7i
+## Choosing the instance type
 
-The instance types are not interchangeable at equal vCPU count:
+The reference run's own numbers, read out of its published Carpet log and
+SLURM epilogue rather than from a summary (measured 2026-08-20 in the
+simulation repository):
 
-| Type | 192 vCPU means | Memory channels | Memory |
+| Quantity | Reference run |
+| --- | --- |
+| Parallelism | 480 ranks, 12 nodes × 40 cores |
+| Wall clock | 46.4 h to t = 3041 M; about 30.5 h to t = 2000 M |
+| Target evolution | ~14,600 core-hours to t = 2000 M |
+| Memory | 438.5 GB, 12 node total, as reported by SLURM |
+| Speed | 3.30 sec/iter at dt = 0.06 M |
+| Merger | t ≈ 713 M (ψ4 amplitude peaks at 1213 M, less the r = 500 M light travel) |
+
+Two of these replace figures this document previously carried: the run is 480
+ranks and not 256, and the memory is 438.5 GB and not 140 GB. The origin of
+the 140 GB number could not be established, and it is no longer used anywhere.
+
+### Memory decides it, not price
+
+438.5 GB is a 12-node total at 480 ranks. A 192 rank run duplicates fewer
+ghost zones and so needs less, but the reduction is weak: each rank's chunk
+grows 2.5× in volume and only 1.36× in linear size, and ghost overhead follows
+the linear size. Read the SLURM figure the most generous way available — as
+decimal GB, hence 408 GiB — and it still sits above c7a.48xlarge's 384 GiB
+before any reduction is applied.
+
+The production instance type is therefore **not settled**. Phase 5 measuring
+the np=192 working set is a go/no-go gate, not a formality: if it does not fit
+one node, multi-node MPI stops being an optional later exercise and becomes a
+requirement.
+
+| Type | Physical cores | Memory | Channels | Spot USD/h | USD per physical core-hour |
+| --- | --- | --- | --- | --- | --- |
+| c7a.48xlarge | 192 Genoa @ 3.7 GHz | 384 GiB | 12 × DDR5 | 2.978 | **0.0155** |
+| m7a.48xlarge | 192 Genoa @ 3.7 GHz | 768 GiB | 12 × DDR5 | 3.747 | 0.0195 |
+| r7a.48xlarge | 192 Genoa @ 3.7 GHz | 1536 GiB | 12 × DDR5 | 4.220 | 0.0220 |
+| c7i.48xlarge | 96 SPR @ 3.2 GHz + HT | 384 GiB | 8 × DDR5 | 3.072 | 0.0320 |
+| c7a.24xlarge | 96 Genoa @ 3.7 GHz | 192 GiB | 12 × DDR5 | 1.950 | 0.0203 |
+
+us-west-2d spot prices, measured 2026-08-20.
+
+**m7a.48xlarge is the planning default.** 768 GiB is the only single-node
+figure with real headroom over the reference, and 26% per core over c7a is
+cheap next to losing a run to an out-of-memory kill. c7a.48xlarge keeps the
+best price per core and becomes the production type only if Phase 5 measures
+the working set well clear of 384 GiB. r7a.48xlarge is the escape hatch if
+768 GiB also proves short.
+
+**c7i.48xlarge is out.** Its hourly price sits within 3% of c7a's, which is
+precisely what makes it a trap: half of its 192 vCPUs are hyperthreads, so the
+real number is 0.0320 USD per physical core-hour against c7a's 0.0155. Add
+8 memory channels against 12 and 3.2 GHz against 3.7, and a bandwidth-bound
+spacetime evolution gets about half a machine for the same money. It is no
+longer scored by the scout — the price check settles it and no further
+measurement will change the ratio.
+
+**Going smaller does not help.** c7a.24xlarge holds 192 GiB, which no full
+resolution run fits into, and it costs 31% more per physical core than the
+48xlarge. Trading cores for wall clock on a smaller machine costs more and
+spends longer exposed to interruption.
+
+### What the run will cost
+
+14,600 core-hours on 192 cores is 76 hours at the reference cluster's per-core
+performance. Genoa at 3.7 GHz on 12 DDR5 channels should be 1.5–2× that per
+core, which brackets the run at 38–76 hours:
+
+| | 38 h | 51 h | 76 h |
 | --- | --- | --- | --- |
-| c7a.48xlarge | 192 physical AMD Genoa cores, SMT off | 12 × DDR5 | 384 GiB |
-| m7a.48xlarge | 192 physical AMD Genoa cores, SMT off | 12 × DDR5 | 768 GiB |
-| c7i.48xlarge | 96 physical Intel SPR cores + hyperthreading | 8 × DDR5 | 384 GiB |
+| c7a.48xlarge at 2.978 USD/h | 113 USD | 152 USD | 226 USD |
+| m7a.48xlarge at 3.747 USD/h | 142 USD | 190 USD | **285 USD** |
 
-A pure-MPI run at np=192 on c7i gets 96 real cores, and a bandwidth-bound
-spacetime evolution feels the missing four memory channels on top of that.
-c7i is scored by the scout for comparison only. In us-west-2 it is also
-dearer than c7a (3.09–4.23 against 2.97–3.33), so the trade never arises
-there.
+The pessimistic corner — m7a at reference per-core performance — consumes the
+entire 300 USD budget on its own. There is a lever for that, and it is a
+physics decision rather than an infrastructure one: the merger is at
+t ≈ 713 M, so the last 1300 M of the 2000 M buys post-merger disc evolution.
+Truncating at ~1500 M saves roughly 25% and still leaves the ringdown room.
+Phase 5 measures the real sec/iter; that is when the call gets made.
 
-m7a is the capacity fallback: identical cores, twice the memory, 20–35%
-dearer. Worth reaching for if the 140 GB estimate turns out low.
+Everything downstream of the run length in this document — checkpoint counts,
+S3 residency, gp3 throughput cost — is sized against the pessimistic 76 hours.
 
 ## Stack lifetimes
 
@@ -227,11 +298,11 @@ Two properties matter more than the sync interval, and both come from the
 78 GB figure.
 
 **S3 holds two generations, not all of them.** A push-only mirror would
-accumulate every checkpoint Cactus writes — 60 generations over a 30 hour run
-at hourly checkpoints, 4.7 TB, roughly 25 USD until the lifecycle rule expires
-it. That is 8% of the project budget spent on copies nothing will ever read.
-The sidecar instead alternates between `checkpoints/slot-a/` and
-`checkpoints/slot-b/`, holding S3 at about 156 GB.
+accumulate every checkpoint Cactus writes — 76 generations over a 76 hour run
+at hourly checkpoints, 5.9 TB, roughly 31 USD until the seven day lifecycle
+rule expires it. That is 10% of the project budget spent on copies nothing
+will ever read. The sidecar instead alternates between `checkpoints/slot-a/`
+and `checkpoints/slot-b/`, holding S3 at about 156 GB.
 
 **A `CURRENT` marker, not a timestamp, decides what gets restored.** Uploading
 78 GB takes minutes, so an instance reclaimed mid-upload leaves a torn set in
@@ -254,16 +325,17 @@ The sync interval is the cheap term: a tick with nothing new is a LIST and
 nothing else. The checkpoint interval is the expensive one, because writing
 78 GB at 1000 MB/s stops every rank for about 78 seconds.
 
-| Checkpoint interval | Write overhead | Lost per 30 h run | Mean loss per interruption |
+| Checkpoint interval | Write overhead | Lost per 76 h run | Mean loss per interruption |
 | --- | --- | --- | --- |
-| 15 min | 8.7% | 2.6 h | ~10 min |
-| 30 min | 4.3% | 1.3 h | ~17 min |
-| 60 min | 2.2% | 0.65 h | ~32 min |
+| 15 min | 8.7% | 6.6 h | ~10 min |
+| 30 min | 4.3% | 3.3 h | ~17 min |
+| 60 min | 2.2% | 1.7 h | ~32 min |
 
-Going from half-hourly to hourly saves 38 minutes of guaranteed overhead over
-a 30 hour run and costs roughly 15 extra minutes per interruption. With a spot
-pool scoring 9, fewer than one interruption per run is the reasonable
-expectation, so hourly wins.
+Going from half-hourly to hourly saves about 1.6 hours of guaranteed overhead
+over a 76 hour run and costs roughly 15 extra minutes per interruption. With a
+spot pool scoring 9, fewer than one interruption per run is the reasonable
+expectation, so hourly wins — and the longer the run turns out to be, the
+wider that margin gets.
 
 Defaults: **checkpoint hourly** (`IO::checkpoint_every_walltime_hours = 1.0`
 in the parfile) with a **5 minute sync**. Revisit if Phase 4 measures
@@ -278,8 +350,8 @@ and worth knowing:
 | Item | Cost |
 | --- | --- |
 | PUT requests, one 78 GB checkpoint (192 rank files, 8 MB parts) | ~0.05 USD |
-| PUT requests, 30 hourly checkpoints | ~1.5 USD |
-| Storage, two slots at 156 GB for three days | ~0.36 USD |
+| PUT requests, 76 hourly checkpoints | ~3.8 USD |
+| Storage, two slots at 156 GB for a week | ~0.84 USD |
 
 ## What the node needs that the image does not carry
 
@@ -385,8 +457,10 @@ and neither can prevent anything: AWS billing data lags 8–24 hours.
 
 | Hazard | Handling |
 | --- | --- |
+| The np=192 working set may not fit 384 GiB | The reference reports 438.5 GB across 12 nodes. Plan on m7a.48xlarge (768 GiB); treat the Phase 5 measurement as a go/no-go gate, not a formality. |
+| `IO::checkpoint_keep` does not prune across runs | Phase 2 left three generations, 77 GB, after two runs. At 78 GB each a 500 GB volume fills after six. The S3 slot rotation bounds S3 only — the sidecar has to prune EBS itself, keeping the generation `CURRENT` names plus one. |
 | Spot vCPU service quota defaults far below 192 | Raise it before Phase 5; approval takes hours to days. `make region-scout` reports the current value. |
-| `InsufficientInstanceCapacity` on a 192 vCPU request | Vary `availability_zone`, then `instance_type` (m7a.48xlarge, c7i.48xlarge). Only zones listed in foundation's `availability_zones` are reachable. |
+| `InsufficientInstanceCapacity` on a 192 vCPU request | Vary `availability_zone` first — only zones listed in foundation's `availability_zones` are reachable — then `instance_type` across m7a / c7a / r7a .48xlarge. Not c7i: it is half the machine at twice the price per real core. |
 | Deep Archive bills a 180 day minimum | `artifacts/` transitions after a delay, so a bad run can be deleted before it is archived. |
 | SNS subscriptions start unconfirmed | Click the link in each of the two confirmation mails after the first apply. |
 | A budget filtered on an unactivated cost allocation tag never fires | `cost_allocation_tag` defaults to null, giving an account-wide budget. |

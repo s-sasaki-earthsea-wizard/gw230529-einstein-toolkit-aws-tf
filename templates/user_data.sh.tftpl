@@ -140,9 +140,15 @@ aws s3 sync "$${S3_RUN}/output/" "$${WORK_DIR}/simulations/" --only-show-errors
 # checkpoint is about 78 GB across one file per MPI rank.
 #
 # Double buffering. A push-only mirror of every checkpoint generation would
-# accumulate 60 generations over a 30 hour run -- 4.7 TB, roughly 25 USD until
-# the lifecycle rule expires it, which is 8% of the project budget. Writing
+# accumulate 76 generations over a 76 hour run -- 5.9 TB, roughly 31 USD until
+# the lifecycle rule expires it, which is 10% of the project budget. Writing
 # alternately into slot-a and slot-b holds S3 at two generations, about 156 GB.
+#
+# TODO(phase5): this bounds S3 only. Phase 2 found that IO::checkpoint_keep
+# does not prune across runs -- two runs left three generations, 77 GB, on
+# disk. At 78 GB each, a 500 GB root volume fills after six, which a run
+# resumed a few times will reach. The sidecar needs to drop every local
+# generation except the one CURRENT names and the one being written.
 #
 # The CURRENT marker. Uploading 78 GB takes minutes, and an instance reclaimed
 # part way through leaves a torn set in S3. Without a marker, restore plus

@@ -89,22 +89,32 @@ variable "instance_type" {
     EC2 instance type.
 
       Phase 4  c7a.2xlarge   ops rehearsal with a dummy payload, a few USD
-      Phase 5  c7a.48xlarge  full resolution measurement, go/no-go
-      Phase 6  c7a.48xlarge  production run
+      Phase 5  m7a.48xlarge  full resolution measurement, go/no-go
+      Phase 6  m7a.48xlarge  production run, or c7a.48xlarge if Phase 5
+                             measures the working set well clear of 384 GiB
 
     c7a.2xlarge has 16 GiB, which is why Phase 4 runs with run_mode =
     "ops-rehearsal" rather than a real evolution -- see that variable.
 
-    Fall back to m7a.48xlarge if c7a capacity is unavailable: same 192
-    physical AMD cores, 768 GiB instead of 384 GiB, 20-35% dearer.
+    m7a leads because memory is the open question, not price. The reference
+    run reports 438.5 GB across its 12 nodes at 480 ranks; a 192 rank run
+    duplicates fewer ghost zones and needs less, but not proportionally less,
+    and c7a.48xlarge's 384 GiB is not a comfortable ceiling against that.
+    c7a.48xlarge is 20% cheaper per physical core and is the better choice
+    the moment Phase 5 shows it fits. r7a.48xlarge (1536 GiB, 42% dearer per
+    core than c7a) is the escape hatch if 768 GiB is short too.
 
-    Do NOT fall back to c7i.48xlarge on price. Its 192 vCPUs are 96 physical
+    Do NOT substitute c7i.48xlarge on price. Its 192 vCPUs are 96 physical
     Sapphire Rapids cores plus hyperthreading, against 192 real cores with
-    SMT disabled on c7a, and it has 8 memory channels against 12. For a
-    bandwidth-bound evolution that is roughly half the machine.
+    SMT disabled on c7a, and it has 8 memory channels against 12 -- 0.0320
+    USD per physical core-hour against c7a's 0.0155, for a bandwidth-bound
+    evolution.
+
+    Nor a smaller size: c7a.24xlarge holds 192 GiB, which no full resolution
+    run fits into, and costs 31% more per physical core than the 48xlarge.
   EOT
   type        = string
-  default     = "c7a.48xlarge"
+  default     = "m7a.48xlarge"
 }
 
 variable "availability_zone" {
@@ -145,7 +155,7 @@ variable "root_volume_throughput" {
   description = <<-EOT
     gp3 throughput in MB/s, between 125 and 1000. Reading a 78 GB checkpoint
     back for an S3 sync takes 10.4 minutes at the 125 MB/s baseline and 1.3
-    minutes at 1000 MB/s, for about 1.4 USD across a 30 hour run.
+    minutes at 1000 MB/s, for about 3.6 USD across a 76 hour run.
   EOT
   type        = number
   default     = 1000
@@ -241,8 +251,8 @@ variable "sync_interval_minutes" {
     The checkpoint interval dominates, and it is set in the parfile
     (`IO::checkpoint_every_walltime_hours`), not here. Writing a 78 GB
     checkpoint stops every rank for about 78 seconds, so checkpointing hourly
-    costs 2.2% of wall clock against 4.3% at half-hourly -- 38 minutes saved
-    over a 30 hour run, against roughly 15 minutes of extra exposure per
+    costs 2.2% of wall clock against 4.3% at half-hourly -- about 1.6 hours
+    saved over a 76 hour run, against roughly 15 minutes of extra exposure per
     interruption. Hourly checkpoints with a 5 minute sync is the intended
     pairing while interruptions stay rare.
   EOT
