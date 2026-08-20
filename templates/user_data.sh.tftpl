@@ -263,6 +263,16 @@ KEEP=$${CHECKPOINT_GENERATIONS_KEPT}
 aws s3 sync "$${WORK_DIR}/simulations/" "$${S3_RUN}/output/" \
   --exclude '*/CHECKPOINTS/*' --only-show-errors
 
+# The bootstrap's own log with it. Everything that happens before Cactus
+# starts -- the ECR pull, the two path rewrites, the uid handover -- is
+# recorded only there, and the console output the EC2 API returns is a 64 KB
+# tail, so on a node that has been up any length of time those lines are
+# already gone. Without this, a bootstrap that failed leaves nothing to read.
+#
+# Never fatal: a missing log is not a reason to abandon a checkpoint push.
+aws s3 cp /var/log/gw230529-bootstrap.log "$${S3_RUN}/logs/bootstrap.log" \
+  --only-show-errors || true
+
 # TODO(phase4): replace with a real completeness test once Phase 2-3 has
 # pinned down the checkpoint file naming and the rank count. The set is
 # complete when it holds exactly \$MPI_PROCS files for the same iteration and
