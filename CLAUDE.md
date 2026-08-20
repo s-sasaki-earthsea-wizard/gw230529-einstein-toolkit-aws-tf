@@ -294,7 +294,13 @@ gitignore 済み: `*.tfvars` / `*.tfstate*` / `backend.hcl` / `.env` / `.terrafo
 
 ### Terraform で完結しない手作業
 
-1. **SNS subscription の確認** — apply 後、2 通の確認メールのリンクをクリック
+1. **SNS subscription の確認** — apply 後、2 通の確認メールの
+   「Confirm subscription」をクリック (すぐ下の解除リンクではない)。
+   購読は**あとから 1 クリックで消える**。SNS が送る全メールに解除リンクが
+   付いていて、消えても Terraform の state 上はリソースが残るので誰も気づかない。
+   気づくのは「鳴るべきときに鳴らなかった」瞬間。
+   `make check-alerts` で実際に配信できるかを検査でき、`make run` は
+   どちらかが無効なら**課金を始める前に停止する** (`SKIP_ALERT_CHECK=1` で回避可)
 2. **コスト配分タグ `Project` の有効化** — Billing コンソール。有効化するまで
    タグフィルタは何にもマッチしないので、`cost_allocation_tag` は既定で null
    (アカウント全体を対象にする方が安全)

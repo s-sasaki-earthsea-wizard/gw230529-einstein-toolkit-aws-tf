@@ -9,7 +9,8 @@
 #   compute     the spot instance. Created for a run, destroyed after.
 #
 # Ordinary flow:  make setup -> check-permissions -> bootstrap -> foundation
-#                 -> push-image -> upload-inputs -> run -> ssm -> stop
+#                 -> check-alerts -> push-image -> upload-inputs
+#                 -> run -> ssm -> stop
 
 # Load .env when present (AWS_PROFILE, AWS_REGION, scout settings).
 ifneq (,$(wildcard .env))
@@ -62,6 +63,10 @@ check-permissions: ## Simulate every IAM action against a live principal (PRINCI
 .PHONY: check-permissions-policy
 check-permissions-policy: ## Simulate the same actions against policies/terraform-operator.json
 	@scripts/check_permissions.sh --policy policies/terraform-operator.json
+
+.PHONY: check-alerts
+check-alerts: ## Fail unless both SNS topics still have a confirmed subscriber
+	@scripts/check_alerts.sh
 
 ##@ Quality
 
@@ -153,6 +158,15 @@ push-image: ## Push the locally built Einstein Toolkit image to ECR
 
 .PHONY: run
 run: ## Launch the spot instance and start a run
+	@if [ -z "$(SKIP_ALERT_CHECK)" ]; then \
+		scripts/check_alerts.sh || \
+		{ echo ""; \
+		  echo "Refusing to start billing with the alerts disarmed."; \
+		  echo "Fix the subscription, or override with:"; \
+		  echo "  make run SKIP_ALERT_CHECK=1"; \
+		  exit 1; }; \
+		echo ""; \
+	fi
 	@echo "This starts billing. The node self-terminates when the run ends."
 	@$(TF) -chdir=stacks/compute apply -input=false -var run_enabled=true
 

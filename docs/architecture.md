@@ -473,6 +473,6 @@ and neither can prevent anything: AWS billing data lags 8–24 hours.
 | Spot vCPU service quota defaults far below 192 | Raise it before Phase 5; approval takes hours to days. `make region-scout` reports the current value. |
 | `InsufficientInstanceCapacity` on a 192 vCPU request | Vary `availability_zone` first — only zones listed in foundation's `availability_zones` are reachable — then `instance_type` across m7a / c7a / r7a .48xlarge. Not c7i: it is half the machine at twice the price per real core. |
 | Deep Archive bills a 180 day minimum | `artifacts/` transitions after a delay, so a bad run can be deleted before it is archived. |
-| SNS subscriptions start unconfirmed | Click the link in each of the two confirmation mails after the first apply. |
+| SNS subscriptions start unconfirmed, and can be deleted later by one click on any unsubscribe link | Follow "Confirm subscription" in both mails after the first apply, and note that the Terraform resource survives an unsubscribe, so nothing reports the loss. `make check-alerts` tests delivery; `make run` refuses to start billing when either topic is disarmed. |
 | A budget filtered on an unactivated cost allocation tag never fires | `cost_allocation_tag` defaults to null, giving an account-wide budget. |
 | Region is effectively permanent | ECR and S3 are region-bound; re-pushing means moving 5–8 GB. Decide with `make region-scout` before the first apply. |

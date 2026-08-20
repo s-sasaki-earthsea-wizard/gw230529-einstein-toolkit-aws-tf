@@ -109,6 +109,7 @@ scripts/
   region_scout.sh      Compare regions on spot score, price and vCPU quota
   check_permissions.sh Simulate every IAM action the stacks need, creating nothing
   check_secrets.sh     Fail if a tracked file carries an account id or ARN
+  check_alerts.sh      Fail unless both SNS topics still have a confirmed subscriber
 policies/
   terraform-operator.json   The single IAM policy the Terraform principal needs
 ```
@@ -145,6 +146,8 @@ make region-scout      # compare candidate regions before committing to one
 
 make init-bootstrap && make apply-bootstrap
 make init-foundation && make apply-foundation
+                       # then click "Confirm subscription" in both mails
+make check-alerts      # and verify the alerts can actually be delivered
 
 make push-image        # push the locally built Einstein Toolkit image to ECR
 make upload-inputs     # upload the parfile and FUKA initial data to the bucket
@@ -170,8 +173,15 @@ slot rotation, interruption flush, restore — with a synthetic payload instead.
 Two manual steps have no Terraform equivalent:
 
 1. **Confirm the SNS subscriptions.** The first `apply-foundation` sends a
-   confirmation mail for each of the two topics. Until the links are clicked,
-   no alert is delivered.
+   confirmation mail for each of the two topics. Until the "Confirm
+   subscription" links are clicked, no alert is delivered.
+
+   This stays true afterwards, which is the awkward part: every message SNS
+   sends carries an unsubscribe link, one click deletes the subscription, and
+   nothing announces that the alerts have stopped. `make check-alerts` reports
+   what each topic can actually deliver, and `make run` refuses to start
+   billing when either is disarmed — override with `SKIP_ALERT_CHECK=1` if
+   that is ever the wrong call.
 2. **Activate the `Project` cost allocation tag** in the Billing console, if
    and when the budgets are narrowed to that tag. Leave
    `cost_allocation_tag` unset until then — a budget filtered on an
