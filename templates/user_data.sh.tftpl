@@ -63,10 +63,20 @@ mkdir -p "$${WORK_DIR}/simulations/$${RUN_NAME}/run"
 
 # ------------------------------------------------------------------
 # 2. Pull the Einstein Toolkit image from ECR
+#
+# Only for a real run. The ops rehearsal writes a synthetic payload with dd
+# and never enters the container, so pulling 5-8 GB would buy nothing -- and
+# on a repository that has not been pushed to yet, `docker pull` fails under
+# `set -e`, which aborts the bootstrap before the shutdown at the end of this
+# script. The instance would then sit idle and billing with nothing running.
 # ------------------------------------------------------------------
-aws ecr get-login-password --region "$${AWS_REGION}" \
-  | docker login --username AWS --password-stdin "${ecr_repository_url}"
-docker pull "$${IMAGE}"
+if [ "$${RUN_MODE}" = "simulation" ]; then
+  aws ecr get-login-password --region "$${AWS_REGION}" \
+    | docker login --username AWS --password-stdin "${ecr_repository_url}"
+  docker pull "$${IMAGE}"
+else
+  echo "run_mode=$${RUN_MODE}: skipping the ECR pull, no container is used"
+fi
 
 # ------------------------------------------------------------------
 # 2b. Fetch the parfile and the FUKA initial data
