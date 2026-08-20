@@ -12,7 +12,7 @@ that keep the whole project inside a 300 USD cap.
 flowchart LR
   subgraph WS["Local workstation"]
     OP["operator<br/>terraform CLI, make"]
-    IMG["Einstein Toolkit image<br/>5-8 GB"]
+    IMG["Einstein Toolkit image<br/>17 GB local, 4.06 GB pushed"]
     UP["parfile + FUKA initial data<br/>4 files, 1.6 MB, not redistributable"]
     RES["figures and analysis"]
   end
@@ -205,7 +205,7 @@ Two manual steps have no Terraform equivalent:
 | --- | --- |
 | VPC, subnets, internet gateway, S3 gateway endpoint, security groups, IAM | 0 |
 | Budgets, Cost Anomaly Detection, SNS | 0 |
-| ECR, 5–8 GB image | ~0.8 USD/month |
+| ECR, 4.06 GB image (measured 2026-08-20) | 0.41 USD/month |
 | S3 standard storage | ~0.023 USD/GB-month |
 | S3 Glacier Deep Archive | ~0.001 USD/GB-month, 180 day minimum |
 | Spot node | billed only while a run is active |

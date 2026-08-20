@@ -15,7 +15,7 @@ ECR (ET イメージ配布)、およびコストガードレールを Terraform 
 | --- | --- | --- |
 | repo 名 | `gw230529-einstein-toolkit-aws-tf` | 本体 repo の sibling |
 | 公開範囲 | public。アカウント固有値は gitignore + `.example` | Q7 |
-| リージョン | 起動ごとの選択はしない。**1 回決めて固定** | ECR/S3 がリージョン束縛。移動 = 5–8 GB 再 push |
+| リージョン | 起動ごとの選択はしない。**1 回決めて固定** | ECR/S3 がリージョン束縛。移動 = 4.06 GB 再 push |
 | リージョン | **us-west-2 に確定 (2026-08-19 実測)** | 下記「リージョン選定の実測結果」 |
 | AZ | **us-west-2d (`usw2-az4`)**、次点 `us-west-2a` → `us-west-2c` | placement score 9 かつ c7a.48xlarge が最安 |
 | インスタンス | **m7a.48xlarge が既定**。Phase 5 の実測次第で c7a.48xlarge | 参照 run のメモリ実測 438.5 GB に対し c7a の 384 GiB は余裕が無い。下記「インスタンス選定の再評価」 |

@@ -26,6 +26,16 @@ resource "aws_ecr_lifecycle_policy" "this" {
 
   policy = jsonencode({
     rules = [
+      # Safe against the OCI image index that `docker push` produces from the
+      # containerd store. That index is what carries the tag; the amd64
+      # manifest it points at and the buildkit attestation manifest are both
+      # untagged and would otherwise match this rule within a day, leaving a
+      # tag whose children have been deleted. ECR does not allow it: "If an
+      # image is referenced by a manifest list, it cannot be expired or
+      # archived without the manifest list being deleted or archived first."
+      # So the children go only when a re-push takes the tag off the old
+      # index, which is exactly when they should. Verified against the pushed
+      # repository on 2026-08-20.
       {
         rulePriority = 1
         description  = "Expire untagged images after one day"

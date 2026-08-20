@@ -91,7 +91,7 @@ path to an accidental egress charge.
 ## Region and instance selection
 
 The region is effectively permanent — ECR images and S3 objects are
-region-bound, so moving means re-pushing 5–8 GB and re-uploading every result.
+region-bound, so moving means re-pushing 4.06 GB and re-uploading every result.
 `make region-scout` produces the three numbers the decision rests on.
 
 Measured 2026-08-19, target capacity 192 vCPU, single availability zone,
@@ -493,4 +493,4 @@ and neither can prevent anything: AWS billing data lags 8–24 hours.
 | The gallery parfile is unfit for spot as shipped | `make upload-inputs` derives the cloud variant and refuses to upload one missing any of the four settings a reclaimed run needs. |
 | SNS subscriptions start unconfirmed, and can be deleted later by one click on any unsubscribe link | Follow "Confirm subscription" in both mails after the first apply, and note that the Terraform resource survives an unsubscribe, so nothing reports the loss. `make check-alerts` tests delivery; `make run` refuses to start billing when either topic is disarmed. |
 | A budget filtered on an unactivated cost allocation tag never fires | `cost_allocation_tag` defaults to null, giving an account-wide budget. |
-| Region is effectively permanent | ECR and S3 are region-bound; re-pushing means moving 5–8 GB. Decide with `make region-scout` before the first apply. |
+| Region is effectively permanent | ECR and S3 are region-bound; re-pushing means moving 4.06 GB. Decide with `make region-scout` before the first apply. |

@@ -72,7 +72,7 @@ mkdir -p "$${WORK_DIR}/simulations/$${RUN_NAME}/run"
 # 2. Pull the Einstein Toolkit image from ECR
 #
 # Only for a real run. The ops rehearsal writes a synthetic payload with dd
-# and never enters the container, so pulling 5-8 GB would buy nothing -- and
+# and never enters the container, so pulling 4.06 GB would buy nothing -- and
 # on a repository that has not been pushed to yet, `docker pull` fails under
 # `set -e`, which aborts the bootstrap before the shutdown at the end of this
 # script. The instance would then sit idle and billing with nothing running.
