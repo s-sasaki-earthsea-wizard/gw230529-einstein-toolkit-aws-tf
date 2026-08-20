@@ -585,6 +585,23 @@ fi
 # ends billing. This is the real cost guard: budget alerts lag by 8-24 hours
 # and cannot stop anything.
 # ------------------------------------------------------------------
+# Wait out the sync's quiescence window before the last push. The run has
+# exited, so nothing can write to the checkpoint directory again -- but
+# Cactus's final act is a termination checkpoint, which means the newest
+# generation is always inside that window at this point and the push would
+# skip it. Measured on 2026-08-20: a run that finished at iteration 64 pushed
+# its output and left the it_64 checkpoint on a volume about to be deleted.
+#
+# It matters most where the run ends on purpose but is not finished -- a
+# walltime cap, or a decision to stop and resume later -- because then the
+# lost generation is exactly the one the next run would have started from.
+# A spot interruption is unaffected: the watcher flushes whatever complete
+# generation is already on disk, which is the design.
+if [ "$${RUN_MODE}" = "simulation" ]; then
+  echo "waiting out the checkpoint quiescence window before the final sync"
+  sleep 45
+fi
+
 /usr/local/bin/gw230529-sync
 echo "=== gw230529 bootstrap finished at $(date -Is), status=$${RUN_STATUS} ==="
 
