@@ -13,7 +13,47 @@
 # $${terraform_values} are substituted at plan time.
 
 set -euo pipefail
-exec > >(tee -a /var/log/gw230529-bootstrap.log) 2>&1
+
+# Prefix every line of the node's output with the wall clock time at which it
+# was read.
+#
+# Cactus writes no timestamps of its own. Carpet::physical_time_per_hour does
+# appear in the run log, but it is a trailing average over
+# Carpet::timing_average_window_minutes and it says nothing about the phases
+# either side of the evolution -- the FUKA import, the checkpoint writes, the
+# ECR pull. Without a clock in the log those can only be inferred from the S3
+# sync timestamps around the run, which is exactly how the dx=28 throughput
+# figure ended up recorded as a range of 4.5-10 sec/iter rather than a value.
+#
+# gawk rather than `ts` from moreutils, which Amazon Linux does not package.
+# It is in the base AMI, and section 1 installs it explicitly; the passthrough
+# fallback exists because an unstamped log still beats a bootstrap that dies
+# for want of a formatting tool.
+#
+# Idempotent: a line that already carries a stamp is passed through untouched.
+# The Cactus pipeline in section 7 stamps its own stream so that the run log
+# under output/ carries the clock too, and that same stream then flows through
+# this filter on its way to the bootstrap log. Without the guard every Cactus
+# line would arrive in the bootstrap log wearing two timestamps.
+#
+# fflush on every line, or the log reaches S3 in 4 KB bursts and a run in
+# flight cannot be watched.
+stamp() {
+  if ! command -v gawk >/dev/null 2>&1; then
+    cat
+    return
+  fi
+  gawk '{
+    if (substr($0, 1, 1) == "[" && substr($0, 22, 1) == "]") {
+      print
+    } else {
+      printf "[%s] %s\n", strftime("%Y-%m-%dT%H:%M:%SZ", systime(), 1), $0
+    }
+    fflush()
+  }'
+}
+
+exec > >(stamp | tee -a /var/log/gw230529-bootstrap.log) 2>&1
 echo "=== gw230529 bootstrap started at $(date -Is) ==="
 
 AWS_REGION="${aws_region}"
@@ -61,7 +101,9 @@ export AWS_DEFAULT_REGION="$${AWS_REGION}"
 # 1. Packages
 # ------------------------------------------------------------------
 dnf -y update
-dnf -y install docker awscli-2 jq
+# gawk for the line stamper defined at the top of this script. It is in the
+# base AMI already; naming it here keeps the dependency visible.
+dnf -y install docker awscli-2 jq gawk
 
 systemctl enable --now docker
 
@@ -563,6 +605,14 @@ else
   #
   # Appending, not truncating: a run resumed after an interruption should read
   # as one log.
+  #
+  # `-b line` is what makes the stamps mean anything. C stdio buffers a pipe
+  # in 4 KB blocks, and the evolution emits one info line every four
+  # iterations -- around 200 bytes -- so a block covers roughly twenty lines.
+  # Fully buffered, all twenty would leave the process together and be stamped
+  # with the moment of the flush rather than the moment they were written,
+  # which is minutes late and unevenly so. Line buffering costs one write
+  # syscall per line at a rate of a few per minute.
   docker run --rm \
     --shm-size=8g \
     -e OMP_NUM_THREADS="$${OMP_THREADS}" \
@@ -571,7 +621,9 @@ else
     -v "$${WORK_DIR}/inputs:$${C_INPUTS}:ro" \
     -w "$${C_RUN_DIR}" \
     "$${IMAGE}" \
-    mpirun.mpich -np "$${MPI_PROCS}" "$${CACTUS_EXE}" "$${C_INPUTS}/$${PARFILE}" 2>&1 \
+    mpirun.mpich -np "$${MPI_PROCS}" \
+      "$${CACTUS_EXE}" -b line "$${C_INPUTS}/$${PARFILE}" 2>&1 \
+    | stamp \
     | tee -a "$${WORK_DIR}/simulations/$${RUN_NAME}/run/cactus-stdout.log" \
     || RUN_STATUS=$?
 
