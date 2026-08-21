@@ -32,6 +32,13 @@ IMAGE_TAG ?= latest
 # back at any directory that already holds them to skip the download.
 INPUTS_DIR ?= upstream
 
+# Wall clock cap for the throughput probe parfile, in minutes. Long enough for
+# the reading to settle -- Carpet averages its own over ten minutes, and the
+# start of a run is dominated by things that happen once -- and long enough
+# that the hourly checkpoint fires inside it, since the seconds it stops every
+# rank belong in the budget as much as the evolution does.
+PROBE_MINUTES ?= 90
+
 # Share one copy of the provider plugins across all three stacks. The AWS
 # provider is ~840 MB; without this, each stack keeps its own copy under
 # .terraform/ and the checkout grows to 2.5 GB.
@@ -136,7 +143,12 @@ fetch-inputs: ## Download the gallery parfile and FUKA initial data (checksum pi
 
 .PHONY: upload-inputs
 upload-inputs: ## Derive the cloud parfile, check it, and upload it with the initial data
-	@INPUTS_DIR="$(INPUTS_DIR)" TF="$(TF)" scripts/upload_inputs.sh
+	@INPUTS_DIR="$(INPUTS_DIR)" TF="$(TF)" scripts/upload_inputs.sh $(ARGS)
+
+.PHONY: upload-probe
+upload-probe: ## Also derive a walltime-capped throughput probe parfile (PROBE_MINUTES=90)
+	@INPUTS_DIR="$(INPUTS_DIR)" TF="$(TF)" \
+		scripts/upload_inputs.sh --probe $(PROBE_MINUTES)
 
 .PHONY: push-image
 push-image: ## Push the locally built Einstein Toolkit image to ECR

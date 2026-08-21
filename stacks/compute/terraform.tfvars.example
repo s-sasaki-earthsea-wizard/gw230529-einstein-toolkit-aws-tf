@@ -83,6 +83,47 @@ checkpoint_generations_kept = 2
 # sync_interval_minutes = 1
 
 # ------------------------------------------------------------------
+# Phase 5 throughput probe: how fast does full resolution actually run?
+#
+# The last number in the cost model that is still a projection. Memory was
+# settled by measurement on 2026-08-20; sec/iter was not, and unlike memory it
+# scales the whole bill linearly instead of gating a yes/no. The 38-76 hour
+# band comes from dividing the reference run's ~14,600 core-hours over 192
+# cores and guessing how much faster a Genoa core is than the reference
+# cluster's.
+#
+# Production settings throughout, with one change: the parfile terminates on
+# wall clock instead of on a physical time it will never reach.
+#
+#   make upload-probe PROBE_MINUTES=90
+#
+# writes Cactus::terminate = "runtime" and Cactus::max_runtime = 90 into
+# bhns_gw230529_probe.par and uploads it. The cap is the cost guard -- nothing
+# else here bounds how long a run bills for, since auto_shutdown fires when
+# the run exits and the production parfile does not exit for days.
+#
+# Ninety minutes because the reading has to settle. Carpet averages its own
+# figure over ten wall clock minutes, the first iterations of any run are
+# dominated by things that happen once, and the hourly checkpoint has to fall
+# inside the window: the seconds it stops every rank are part of what a
+# production hour costs. Roughly 105 minutes of instance time all told, about
+# 5 USD, against a 226 USD question.
+#
+# Nothing about the checkpointing is switched off to make the probe look
+# faster. It writes an initial data checkpoint, an hourly one, and one on
+# termination -- 85.7 GB each -- so the volume needs the production 500 GB and
+# the run leaves a full resolution restart point behind in the bucket.
+#
+# Read the answer with `make throughput`, which parses the run log directly.
+# ------------------------------------------------------------------
+# run_mode            = "simulation"
+# instance_type       = "c7a.48xlarge"
+# run_name            = "phase5-throughput-dx19p2"
+# parfile             = "bhns_gw230529_probe.par"
+# mpi_procs           = 192
+# root_volume_size_gb = 500
+
+# ------------------------------------------------------------------
 # Phase 5-6: full resolution
 #
 # Requires `make upload-inputs` first -- the parfile and FUKA initial data are
