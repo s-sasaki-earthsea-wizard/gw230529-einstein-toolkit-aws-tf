@@ -181,6 +181,10 @@ ssm: ## Open a shell on the running node through SSM Session Manager
 	fi && \
 	echo "$$cmd" && exec $$cmd
 
+.PHONY: throughput
+throughput: ## Read sec/iter and the cost projection out of a run log
+	@scripts/read_throughput.sh $(ARGS)
+
 .PHONY: heartbeat
 heartbeat: ## Print the latest heartbeat object written by the node
 	@bucket=$$($(TF) -chdir=stacks/foundation output -raw data_bucket) && \
