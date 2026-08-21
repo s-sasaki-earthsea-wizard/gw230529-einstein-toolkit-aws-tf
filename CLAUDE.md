@@ -19,6 +19,7 @@ ECR (ET イメージ配布)、およびコストガードレールを Terraform 
 | リージョン | **us-west-2 に確定 (2026-08-19 実測)** | 下記「リージョン選定の実測結果」 |
 | AZ | **us-west-2d (`usw2-az4`)**、次点 `us-west-2a` → `us-west-2c` | placement score 9 かつ c7a.48xlarge が最安 |
 | インスタンス | **c7a.48xlarge が既定 (2026-08-20 実測で確定)** | np=192 フル解像度のメモリ実測 136 GiB は 384 GiB の 35%。下記「Phase 5 メモリ実測」 |
+| 本番 run の長さ | **38.5 時間 / 115 USD (2026-08-21 実測)** | 4.16 sec/iter × 33,333 iteration。下記「Phase 5 スループット実測」 |
 | state backend | S3 + native lockfile (`use_lockfile`) | DynamoDB テーブルが不要になる |
 | S3 構成 | 1 バケット + prefix 別 lifecycle | バケット分割は分離を買わずポリシー面だけ増える |
 | ネットワーク | public subnet + IGW + S3 Gateway Endpoint | private + NAT は月 33 USD、予算の 11% |
@@ -109,22 +110,25 @@ c7a.48xlarge の 384 GiB を超えている**。
 - **小さくする案は成立しない**。c7a.24xlarge は 192 GiB でフル解像度が載らず、
   しかも 48xlarge より物理コア単価が 31% 高い
 
-**コスト見積り**: 14,600 core-hours ÷ 192 コア = 参照ノードと per-core 同等なら
-76 時間。Genoa 3.7 GHz / DDR5 12ch で 1.5–2 倍と見て **38–76 時間**:
+**コスト見積り【2026-08-21 実測で確定】**: 下記「Phase 5 スループット実測」の
+とおり **4.16 sec/iter**。t=2000 M までは 33,333 iteration = **38.5 時間**、
+c7a.48xlarge spot で **115 USD**。
 
-| | 38 h | 51 h | 76 h |
+| | 実測 4.16 s/it → 2000 M | 1500 M で打ち切り | (旧) 悲観端 76 h |
 | --- | --- | --- | --- |
-| c7a.48xlarge @ 2.978 | 113 USD | 152 USD | 226 USD |
-| m7a.48xlarge @ 3.747 | 142 USD | 190 USD | **285 USD** |
+| c7a.48xlarge @ 2.978 | **115 USD (38.5 h)** | 86 USD (28.9 h) | 226 USD |
 
-**【2026-08-20 更新】c7a 行が本番の見積りになった** ので、悲観端でも 226 USD。
-ただし **sec/iter は未測定**であり、この表は参照 run の core-hours からの
-外挿のままである。逃げ道は
-**合体が t≈713 M なので 2000 M ではなく ~1500 M で打ち切る** (約 25% 節約、
-ringdown は余裕で収まる)。ただしこれは物理側の判断なので Phase 5 の実測待ち。
+外挿は **38–76 時間**という帯だった (14,600 core-hours ÷ 192 コアで参照ノード
+per-core 同等なら 76 時間、Genoa は 1.5–2 倍と見て下限 38 時間)。実測は
+参照ノードの **2.07 倍**で、帯の楽観端をわずかに超えた。
 
-本 repo の run 長依存の数値 (checkpoint 世代数、S3 常駐量、gp3 スループット費)
-は**すべて悲観側の 76 時間で見積もり直した**。
+- **逃げ道は当面いらない**。「合体が t≈713 M なので ~1500 M で打ち切る」案は
+  29 USD の節約にしかならず、post-merger のディスク進化を捨てる価値はない。
+  これは物理側の判断だが、少なくともコストが理由で迫られる決定ではなくなった
+- **run 長依存の数値は 76 時間のまま据え置く**。checkpoint 世代数、S3 常駐量、
+  gp3 スループット費はすべて悲観側で見積もってある。実測が半分になったので
+  安全側に倍の余裕がついただけで、締め直す理由はない。中断からの再開を
+  何度か挟めば実 wall clock は 38.5 時間より延びる
 
 ### Phase 5 メモリ実測 (2026-08-20、np=192 フル解像度)
 
@@ -153,11 +157,51 @@ ringdown は余裕で収まる)。ただしこれは物理側の判断なので 
 - 検算に使える関係: **checkpoint サイズ ∝ GF total 点数**。
   30.1 GB × (13,215/4,889) = 81 GB で、実測 85.7 GB と 5% 差
 
-**残る最大の未知は sec/iter。** この probe は 4 iteration で終わるので、
-起動時解析に埋もれて意味のある値が取れない (Phase 2 の
-「短い区間でサンプリングするな」がそのまま効く)。**76 時間・226 USD という
-見積りは、いまだに参照 run の core-hours からの外挿**である。
-次にやるべきはスループット probe (フル解像度を 1 時間以上回す、約 3 USD)。
+**残る最大の未知は sec/iter だった。**【2026-08-21 解消、下記】この probe は
+4 iteration で終わるので、起動時解析に埋もれて意味のある値が取れない
+(Phase 2 の「短い区間でサンプリングするな」がそのまま効く)。実際この probe が
+報告した 29.37 M/h に対し、90 分回した実測は **54.06 M/h** だった。
+**4 iteration の値で予算を立てていたら 1.8 倍外していた**。
+
+### Phase 5 スループット実測 (2026-08-21、np=192 フル解像度)
+
+**コスト見積り最後の外挿が消えた。** `bhns_gw230529_probe.par`
+(production と同一設定 + `Cactus::terminate = "runtime"` /
+`Cactus::max_runtime = 90`) を c7a.48xlarge / us-west-2d で 90 分回した。
+run_name `phase5-throughput-dx19p2`、t=0 → 62.94 M (iteration 1049)。
+
+| | 実測 |
+| --- | --- |
+| **evolution ループ単体** (サンプル中央値) | **3.75 sec/iter** |
+| **実効レート** (窓平均、全オーバーヘッド込み) | **4.16 sec/iter** |
+| Carpet `physical_time_per_hour` 中央値 | 54.06 M/h (= 4.00 sec/iter) |
+| 突き合わせ (Carpet / 壁時計) | **0.961** |
+| checkpoint 書き込み 85.7 GB | 約 76 秒 (毎時 = wall clock の 2.1%) |
+| 2D 出力 (1024 iteration ごと) | 約 31 秒 |
+| FUKA import 8 レベル | 344 秒 (5.7 分) |
+| import → evolution 開始 | 約 10 分 (iteration 0 解析 + AH 探索 + ID checkpoint) |
+| **cold start 合計** (コンテナ起動 → evolution) | **約 18 分** |
+| Carpet 必要メモリ / ノード実測 | 125.273 GByte / **137 of 369 GiB** |
+
+- **2 通りの独立した読み方が 3.9% で一致した。** Carpet 自身の
+  `physical_time_per_hour` (10 分の後方移動平均) と、行タイムスタンプの差分。
+  片方だけなら「たまたまそう見えた」を排除できない
+- **cold start は import の 5.7 分ではなく約 18 分。** import 完了から
+  evolution 開始まで 10 分あり、これは今まで誰も見ていなかった区間
+  (iteration 0 の解析と 1D/2D/0D 出力)。`IO::checkpoint_ID = "yes"` を
+  必須にした判断の裏取りになった — 中断のたびに 18 分払うところだった
+- **メモリが本番インスタンス型で再現した。** 昨日の測定は m7a.48xlarge
+  だったが、c7a.48xlarge (384 GiB、うち OS 込み 369 GiB 可視) でも
+  Carpet 125.273 GByte / ノード 137 GiB。**37%**
+- **checkpoint 書き込みは 1000 MB/s ちょうど** = `root_volume_throughput` に
+  設定した gp3 の帯域。設計文書の「78 GB で 78 秒」はサイズが増えたぶん
+  比例して伸びただけで、仮定は正しかった
+
+**測定条件の限界を明記しておく。** これは **t=0–63 M、2000 M の 3%** で、
+純粋な inspiral である。合体は **t≈713 M**。合体時の regrid とディスク形成が
+per-iteration コストを上げる可能性は残っている。`Carpetregrid2` の半径は
+M 単位で固定、`num_levels` も 8 で固定なので格子点数は増えないが、
+con2prim の反復回数は増えうる。**38.5 時間は下限に近い値として扱うこと**。
 
 ### checkpoint 同期の設計 (2026-08-20 決定)
 
@@ -240,6 +284,16 @@ sibling repo の Phase 1 (Docker ビルド) / Phase 2 (ローカル smoke) か�
 
 ### 未確定 / 保留
 
+- 【2026-08-21 解消】**フル解像度の sec/iter** — 実測 **4.16 sec/iter**
+  (evolution ループ単体は 3.75)。t=2000 M まで **38.5 時間 / 115 USD**。
+  上記「Phase 5 スループット実測」。probe は 105 分・約 5.2 USD
+
+  **残った未知はこれに置き換わる: 合体時 (t≈713 M) の per-iteration コスト。**
+  測定は t=0–63 M、つまり全体の 3% の純 inspiral 区間でしかない。格子点数は
+  増えない (`Carpetregrid2` の半径は M 固定、`num_levels` も 8 固定) が、
+  con2prim の反復回数は増えうる。**38.5 時間は下限に近い値**として扱う。
+  安く測る方法は無い — 合体まで走らせるのが唯一の測り方なので、
+  これは本番 run の中で監視する (`make throughput` を途中で回せばよい)
 - 【解消】**checkpoint からの recover 実証** — sibling の Phase 2 で完了。
   `recover = "autoprobe"` が `it_256` を自動で拾い、**Kadath import 実行 0 回**。
   recover 読み込み + 終了時 checkpoint で 94 秒、cold start の 2065 秒に対し

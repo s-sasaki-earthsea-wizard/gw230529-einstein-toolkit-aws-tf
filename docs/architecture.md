@@ -145,7 +145,7 @@ simulation repository):
 | Wall clock | 46.4 h to t = 3041 M; about 30.5 h to t = 2000 M |
 | Target evolution | ~14,600 core-hours to t = 2000 M |
 | Memory | 438.5 GB, 12 node total, as reported by SLURM |
-| Speed | 3.30 sec/iter at dt = 0.06 M |
+| Speed | 3.30 sec/iter at dt = 0.06 M (480 ranks; 8.25 at 192 for equal per-core speed, against 4.16 measured) |
 | Merger | t ≈ 713 M (ψ4 amplitude peaks at 1213 M, less the r = 500 M light travel) |
 
 Two of these replace figures this document previously carried: the run is 480
@@ -205,27 +205,74 @@ spends longer exposed to interruption.
 
 ### What the run will cost
 
-14,600 core-hours on 192 cores is 76 hours at the reference cluster's per-core
-performance. Genoa at 3.7 GHz on 12 DDR5 channels should be 1.5–2× that per
-core, which brackets the run at 38–76 hours:
+Measured, not projected, since 2026-08-21. A 90 minute probe at full
+resolution on the production instance type reached t = 62.94 M in 1049
+iterations:
 
-| | 38 h | 51 h | 76 h |
+| | Measured |
+| --- | --- |
+| Evolution loop alone, median sample | **3.75 sec/iter** |
+| Effective rate, window mean with every overhead in it | **4.16 sec/iter** |
+| `Carpet::physical_time_per_hour`, median | 54.06 M/h (= 4.00 sec/iter) |
+| Agreement between the two independent readings | 3.9% |
+
+At 4.16 sec/iter, t = 2000 M is 33,333 iterations:
+
+| | t = 2000 M | truncated at 1500 M | (old) pessimistic 76 h |
 | --- | --- | --- | --- |
-| c7a.48xlarge at 2.978 USD/h | 113 USD | 152 USD | 226 USD |
-| m7a.48xlarge at 3.747 USD/h | 142 USD | 190 USD | **285 USD** |
+| c7a.48xlarge at 2.978 USD/h | **115 USD, 38.5 h** | 86 USD, 28.9 h | 226 USD |
 
-With c7a.48xlarge now the production type the pessimistic corner is 226 USD
-rather than 285. The hours themselves remain an extrapolation from the
-reference run's core-hours — sec/iter at full resolution is unmeasured, and a
-four iteration probe cannot supply it, because start-up analysis dominates a
-sample that short. There is also a lever, and it is a physics decision rather
-than an infrastructure one: the merger is at
-t ≈ 713 M, so the last 1300 M of the 2000 M buys post-merger disc evolution.
-Truncating at ~1500 M saves roughly 25% and still leaves the ringdown room.
-Phase 5 measures the real sec/iter; that is when the call gets made.
+The extrapolation this replaces bracketed the run at 38–76 hours: 14,600
+core-hours on 192 cores is 76 hours at the reference cluster's per-core
+performance, and Genoa at 3.7 GHz on 12 DDR5 channels was guessed at 1.5–2×
+that. It measures 2.07×, just past the optimistic end of the band.
+
+**The lever is no longer needed.** Truncating at ~1500 M — the merger is at
+t ≈ 713 M, so the last 1300 M buys post-merger disc evolution — now saves 29
+USD rather than 57. That remains a physics decision, but it is no longer one
+that cost forces.
+
+**What the rate does and does not cover.** The window mean carries every
+overhead the probe actually paid: one hourly checkpoint (85.7 GB, 76 s of
+stopped ranks), one 2D output (31 s per 1024 iterations), and the periodic
+analysis — AHFinderDirect every 16 iterations, VolumeIntegrals every 128,
+Multipole and the 1D/0D output every 256. It does not cover the merger. The
+probe sampled t = 0–63 M, 3% of the run and pure inspiral. Grid point counts
+will not grow — `CarpetRegrid2` radii are fixed in M and `num_levels` is
+pinned at 8 — but con2prim iteration counts can. **Treat 38.5 hours as close
+to a floor.**
+
+There is no cheap way to measure the merger: reaching it *is* the run. Watch
+it instead, with `make throughput` against the live log.
 
 Everything downstream of the run length in this document — checkpoint counts,
-S3 residency, gp3 throughput cost — is sized against the pessimistic 76 hours.
+S3 residency, gp3 throughput cost — is still sized against 76 hours. The
+measurement halved the expected wall clock rather than the ceiling, and a run
+resumed a few times after interruptions spends longer than 38.5 hours
+wall clock even at this rate. The headroom stays.
+
+### Starting a run costs 18 minutes, not 6
+
+The line stamping added on 2026-08-21 put a wall clock on the phases either
+side of the evolution for the first time:
+
+| Phase | Wall clock |
+| --- | --- |
+| Container start to Carpet grid statistics | ~1 min |
+| FUKA/Kadath import, 8 refinement levels | 344 s (5.7 min) |
+| Iteration 0 analysis, first AHFinderDirect search, 1D/2D/0D output | ~7.6 min |
+| Initial data checkpoint, 85.7 GB | 86 s |
+| **Total, container start to first evolution step** | **~18 min** |
+
+The 7.6 minutes between the end of the import and the first horizon search had
+never been visible: without timestamps the log shows one INFO line following
+another. It is the reason `IO::checkpoint_ID = "yes"` matters more than the
+import time alone suggested — an interruption without it pays 18 minutes, not
+the 6 the import accounts for.
+
+The 86 s for 85.7 GB is exactly the 1000 MB/s that `root_volume_throughput`
+provisions, which confirms the design assumption of 78 s for 78 GB: the write
+is bandwidth-bound and scaled with the file.
 
 ## Stack lifetimes
 

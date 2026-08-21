@@ -158,8 +158,17 @@ make upload-inputs     # derive the cloud parfile from it and upload
 make init-compute
 make run               # launch the spot node
 make ssm               # open a shell on it
+make throughput        # read sec/iter and the cost projection out of the run log
 make stop              # terminate it
 ```
+
+To measure rather than to run, `make upload-probe PROBE_MINUTES=90` uploads a
+second parfile alongside the production one. It is the production parfile with
+its termination condition changed from a physical time it will never reach to
+a wall clock cap it certainly will, which is the only thing bounding what a
+probe bills: `auto_shutdown` fires when the run exits, and a full resolution
+run does not exit for days. Point `parfile` at it in
+`stacks/compute/terraform.tfvars` and the node ends itself on schedule.
 
 `fetch-inputs` and `upload-inputs` are not optional for a simulation run. The
 parfile and the FUKA initial data are Einstein Toolkit gallery artefacts, so
@@ -213,24 +222,35 @@ Two manual steps have no Terraform equivalent:
 Nothing in `stacks/foundation` bills by the hour, so the project can sit idle
 between phases without spending.
 
-The production run is the only large item. The reference run costs about
-14,600 core-hours to reach the target evolution time, which on 192 cores is
-38–76 hours depending on how much faster a Genoa core is than the reference
-cluster's — 113–226 USD on c7a.48xlarge, 142–285 USD on m7a.48xlarge.
+The production run is the only large item, and it is now measured rather than
+projected. A 90 minute probe at full resolution on 2026-08-21 read **4.16
+sec/iter** at dt = 0.06 M, so t = 2000 M is 33,333 iterations — **38.5 hours,
+115 USD on c7a.48xlarge**. Truncating at t = 1500 M, past the merger at
+t ≈ 713 M, would be 28.9 hours and 86 USD.
 
-c7a.48xlarge is the planning default, on a measurement rather than a
-projection. A full resolution 192 rank run measured 136 GiB across the node
-on 2026-08-20, 35% of c7a's 384 GiB. The reference run's 438.5 GB is a
-scheduler high water mark over 480 ranks on 12 nodes, which duplicates far
-more ghost zones than one node at 192 does. m7a.48xlarge (768 GiB) is the
-fallback.
+That replaces an extrapolation of 38–76 hours and 113–226 USD, and lands just
+past its optimistic end: a Genoa core is 2.07× the reference cluster's, where
+1.5–2× was assumed.
 
-The hours are still an extrapolation from the reference run's core-hours:
-sec/iter at full resolution has not been measured, and that is now the
-largest open number in the budget.
-Which one actually runs Phase 6 is decided by the Phase 5 measurement, not
-assumed here. See
+Two conditions belong with the number. The rate carries every overhead the
+probe paid — the hourly 85.7 GB checkpoint costs 76 seconds of stopped ranks,
+the 2D output 31 seconds per 1024 iterations — but the probe covered t = 0–63
+M, which is 3% of the run and pure inspiral. The merger is not in it, so treat
+38.5 hours as close to a floor. Read the live log with `make throughput` while
+the production run is going rather than assuming it holds.
+
+c7a.48xlarge is the production type on measurement too. A full resolution 192
+rank run measured 137 GiB across the node, 37% of c7a's 384 GiB — first on
+m7a.48xlarge on 2026-08-20 and then reproduced on c7a itself. The reference
+run's 438.5 GB is a scheduler high water mark over 480 ranks on 12 nodes,
+which duplicates far more ghost zones than one node at 192 does.
+m7a.48xlarge (768 GiB) is the fallback. See
 [docs/architecture.md](docs/architecture.md#choosing-the-instance-type).
+
+Starting a run costs about 18 minutes before the first evolution step: 5.7
+minutes of FUKA import, 7.6 minutes of iteration 0 analysis and output, and 86
+seconds to write the initial data checkpoint. That is what an interruption
+costs when `IO::checkpoint_ID` is not set.
 
 The budget alerts are after the fact — AWS billing data lags 8–24 hours. Real
 time containment comes from two places instead: the spot request is capped at

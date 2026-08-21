@@ -85,12 +85,14 @@ checkpoint_generations_kept = 2
 # ------------------------------------------------------------------
 # Phase 5 throughput probe: how fast does full resolution actually run?
 #
-# The last number in the cost model that is still a projection. Memory was
-# settled by measurement on 2026-08-20; sec/iter was not, and unlike memory it
-# scales the whole bill linearly instead of gating a yes/no. The 38-76 hour
-# band comes from dividing the reference run's ~14,600 core-hours over 192
-# cores and guessing how much faster a Genoa core is than the reference
-# cluster's.
+# Measured 2026-08-21: 4.16 sec/iter at dt = 0.06 M, from a 90 minute run that
+# reached t = 62.94 M in 1049 iterations. Carpet's own physical_time_per_hour
+# read 54.06 M/h over the same window, agreeing with the wall clock to 3.9%.
+# The probe cost about 5.2 USD and settled a 226 USD question.
+#
+# Repeat it when something changes that could move the rate -- a different
+# instance type, a different rank count, a rebuilt image -- or to see what the
+# merger costs once the production run is near t = 713 M.
 #
 # Production settings throughout, with one change: the parfile terminates on
 # wall clock instead of on a physical time it will never reach.
@@ -140,6 +142,11 @@ checkpoint_generations_kept = 2
 #
 # One checkpoint generation measured 85.7 GB, so keep = 2 holds 171 GB of the
 # 500 GB volume and leaves the rest for diagnostic output.
+#
+# Expect 38.5 hours and 115 USD to t = 2000 M, at the 4.16 sec/iter measured on
+# 2026-08-21 -- but that was measured over t = 0-63 M, which is pure inspiral.
+# The merger at t ~ 713 M is not in it. Run `make throughput` against the live
+# log every so often rather than assuming the rate holds.
 # ------------------------------------------------------------------
 # run_mode            = "simulation"
 # instance_type       = "c7a.48xlarge"
