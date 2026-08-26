@@ -93,9 +93,21 @@ fmt-check: ## Fail if any Terraform file is not canonically formatted
 .PHONY: validate
 validate: ## Validate every stack without contacting a backend
 	@mkdir -p $(TF_PLUGIN_CACHE_DIR)
+	@# Only initialise a stack that has never been initialised. `init
+	@# -backend=false` sounds offline and is not: once a directory has been
+	@# initialised against the S3 backend, every later init still reaches for
+	@# it, so re-running it here made a pre-commit check depend on a live AWS
+	@# session. That went unnoticed while a static access key answered
+	@# silently.
+	@#
+	@# A stack whose modules or providers changed will fail with terraform
+	@# saying so and naming init as the fix, which is the right place to be
+	@# told.
 	@for s in bootstrap foundation compute; do \
 		echo "--- validating stacks/$$s ---"; \
-		$(TF) -chdir=stacks/$$s init -backend=false -input=false >/dev/null || exit 1; \
+		if [ ! -d stacks/$$s/.terraform ]; then \
+			$(TF) -chdir=stacks/$$s init -backend=false -input=false >/dev/null || exit 1; \
+		fi; \
 		$(TF) -chdir=stacks/$$s validate || exit 1; \
 	done
 
