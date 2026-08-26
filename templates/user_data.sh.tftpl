@@ -339,6 +339,76 @@ CKPT_DIR="$${WORK_DIR}/checkpoints"
 S3_CKPT="$${S3_RUN}/checkpoints"
 KEEP=$${CHECKPOINT_GENERATIONS_KEPT}
 RANKS=$${MPI_PROCS}
+STAMP=/var/lib/gw230529/last-synced-checkpoint
+
+# What "the checkpoint directory has not changed" means, in one place.
+#
+# It is asked twice on an ordinary tick -- once to decide whether to push,
+# once to record what was pushed -- and a third time by --stamp-only after a
+# restore. Two of those have to agree exactly or the tick that follows sees a
+# difference and uploads a set that is already in S3, which is the whole of
+# issue #11. A function is cheaper than the comment explaining why the three
+# copies must be kept in step.
+checkpoint_signature() {
+  find "\$${CKPT_DIR}" -name '*.h5' -printf '%p %s %T@\n' 2>/dev/null | sort | sha256sum
+}
+
+write_stamp() {
+  mkdir -p "\$(dirname "\$${STAMP}")"
+  printf '%s' "\$(checkpoint_signature)" > "\$${STAMP}"
+}
+
+# Per-tick log.
+#
+# Everything this script prints used to reach only the journal, which dies
+# with the instance. The single exception was the final tick, because section
+# 8 calls the script directly and inherits the bootstrap log -- which is why
+# the 2026-08-26 recovery test had to be reconstructed from S3 object
+# timestamps rather than read off a log (#11).
+#
+# What was wanted and missing is the cost of a tick that does nothing. It
+# still walks the output tree and lists a prefix, and on a node running
+# np=192 on 192 cores with nothing spare, seconds spent there are not paid by
+# one rank but by all of them at the next barrier. That is a candidate
+# explanation for a recovered run measuring three times the sec/iter of the
+# fresh one, and without a per-tick clock it cannot be told from the others.
+#
+# The file sits inside the tree this script syncs, so it reaches S3 on the
+# next tick rather than this one, and it is additive across restarts for the
+# same reason cactus-stdout.log is: the restore pulls output/ back first.
+#
+# tee keeps the original stdout, so the final direct call still reports into
+# the bootstrap log exactly as before.
+TICK_LOG="$${WORK_DIR}/simulations/sync.log"
+mkdir -p "$${WORK_DIR}/simulations"
+exec > >(tee -a "\$${TICK_LOG}") 2>&1
+
+# Same stamp format as section 0, so these lines pass through that stamper
+# untouched on the final call instead of arriving wearing two timestamps.
+say() { printf '[%s] %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\$*"; }
+
+# SECONDS is elapsed time since this shell started, so every figure below is
+# measured from the start of the tick.
+say "tick start"
+trap 'say "tick end after \$${SECONDS}s"' EXIT
+
+# --stamp-only: record the restored set as already synced, and push nothing.
+#
+# The bootstrap calls this once, after a restore. Without it the first
+# ordinary tick finds no stamp, concludes that everything has changed, and
+# re-uploads to the opposite slot the very set it has just downloaded --
+# 162 GiB measured on 2026-08-26, and worse than merely wasteful, because it
+# reads all of it back off the volume during the minutes Cactus is placing
+# its memory (see section 3).
+#
+# Nothing is at risk while the stamp stands in for a push: the set it
+# describes is the one CURRENT already names in S3. The first push happens
+# when Cactus writes a generation that is genuinely new.
+if [ "\$${1:-}" = "--stamp-only" ]; then
+  write_stamp
+  say "stamped the restored checkpoint set; the first tick will not re-upload it"
+  exit 0
+fi
 
 # Diagnostic output first: cheap, additive, and never blocks a restart.
 # CHECKPOINTS is excluded as a guard: it should be empty on the host because
@@ -357,6 +427,12 @@ aws s3 sync "$${WORK_DIR}/simulations/" "$${S3_RUN}/output/" \
 aws s3 cp /var/log/gw230529-bootstrap.log "$${S3_RUN}/logs/bootstrap.log" \
   --only-show-errors || true
 
+# The unconditional part of every tick ends here. Everything after it is
+# skipped unless a new checkpoint generation exists, so this figure is what
+# the sidecar costs on a tick that finds nothing to do -- the number the
+# interval has to be chosen against.
+say "output and log pushed (\$${SECONDS}s)"
+
 # Completeness. Syncing a set that Cactus is still writing is the one failure
 # this whole design exists to prevent, so both halves have to hold: nothing
 # written in the last 30 seconds, and the newest generation holding one file
@@ -372,7 +448,7 @@ aws s3 cp /var/log/gw230529-bootstrap.log "$${S3_RUN}/logs/bootstrap.log" \
 # When in doubt, skip: the next tick will handle it.
 newest=\$(find "\$${CKPT_DIR}" -name '*.h5' -newermt '-30 seconds' -print -quit 2>/dev/null || true)
 if [ -n "\$${newest}" ]; then
-  echo "checkpoint still being written; skipping this tick"
+  say "checkpoint still being written; skipping this tick"
   exit 0
 fi
 
@@ -383,16 +459,14 @@ if [ -n "\$${newest_gen}" ]; then
   # it_10 or it_16.
   have=\$(find "\$${CKPT_DIR}" -maxdepth 1 -name "*.\$${newest_gen}.*.h5" 2>/dev/null | wc -l)
   if [ "\$${have}" -ne "\$${RANKS}" ]; then
-    echo "generation \$${newest_gen} has \$${have} of \$${RANKS} files; skipping this tick"
+    say "generation \$${newest_gen} has \$${have} of \$${RANKS} files; skipping this tick"
     exit 0
   fi
 fi
 
 # Nothing new since the last successful push?
-STAMP=/var/lib/gw230529/last-synced-checkpoint
-mkdir -p "\$(dirname "\$${STAMP}")"
-signature=\$(find "\$${CKPT_DIR}" -name '*.h5' -printf '%p %s %T@\n' 2>/dev/null | sort | sha256sum)
-if [ -f "\$${STAMP}" ] && [ "\$(cat "\$${STAMP}")" = "\$${signature}" ]; then
+if [ -f "\$${STAMP}" ] && [ "\$(cat "\$${STAMP}")" = "\$(checkpoint_signature)" ]; then
+  say "no new checkpoint generation since the last push"
   exit 0
 fi
 
@@ -418,28 +492,34 @@ count=\$(printf '%s\n' "\$${gens}" | grep -c . || true)
 if [ "\$${count}" -gt "\$${KEEP}" ]; then
   printf '%s\n' "\$${gens}" | head -n \$(( count - KEEP )) | while read -r g; do
     [ -n "\$${g}" ] || continue
-    echo "pruning local generation \$${g}"
+    say "pruning local generation \$${g}"
     rm -f "\$${CKPT_DIR}"/*."\$${g}".*
   done
-  echo "kept \$${KEEP} of \$${count} generations on disk"
+  say "kept \$${KEEP} of \$${count} generations on disk"
 fi
 
 current=\$(aws s3 cp "\$${S3_CKPT}/CURRENT" - 2>/dev/null || true)
 if [ "\$${current}" = "slot-a" ]; then target=slot-b; else target=slot-a; fi
 
-echo "pushing checkpoints to \$${target}"
+say "pushing checkpoints to \$${target}"
 aws s3 sync "\$${CKPT_DIR}/" "\$${S3_CKPT}/\$${target}/" --delete --only-show-errors
 
 # Only now is the slot known good.
 printf '%s' "\$${target}" | aws s3 cp - "\$${S3_CKPT}/CURRENT" --only-show-errors
-echo "CURRENT is now \$${target}"
+say "CURRENT is now \$${target}"
 # Recompute rather than reuse the signature taken above: pruning changed the
 # directory, and stamping the pre-prune set would leave the next tick seeing a
 # difference and pushing the same generations again.
-signature=\$(find "\$${CKPT_DIR}" -name '*.h5' -printf '%p %s %T@\n' 2>/dev/null | sort | sha256sum)
-printf '%s' "\$${signature}" > "\$${STAMP}"
+write_stamp
 SYNC
 chmod +x /usr/local/bin/gw230529-sync
+
+# Tell the sidecar that what the restore brought down is already in S3, before
+# the timer starts. Only after a restore: with no CURRENT marker the
+# checkpoint directory is empty and there is nothing to describe.
+if [ -n "$${CURRENT_SLOT}" ]; then
+  /usr/local/bin/gw230529-sync --stamp-only
+fi
 
 cat > /etc/systemd/system/gw230529-sync.service <<UNIT
 [Unit]
