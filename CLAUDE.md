@@ -345,9 +345,89 @@ sibling repo の Phase 1 (Docker ビルド) / Phase 2 (ローカル smoke) か�
     消せる。検証済み: 自分=allowed / タグ無し=explicitDeny / 他=explicitDeny
   - `ce:*` / Session Manager / `ec2:GetSpotPlacementScores` などは
     AWS 側にリソースレベル権限が無いので `*`。README に理由を明記
-  - `iam:AttachUserPolicy` / `iam:CreatePolicy` を含めないので、
-    **このユーザーは自分を admin に昇格できない** (旧 `IAMFullAccess` 構成には
-    無かった性質)
+  - ~~`iam:AttachUserPolicy` / `iam:CreatePolicy` を含めないので、
+    **このユーザーは自分を admin に昇格できない**~~
+
+    **【2026-08-26 訂正】この記述は誤りだった。** ユーザーポリシー経由は
+    確かに塞がっているが、**role 経由が開いている**:
+
+    | 材料 | 現状 |
+    | --- | --- |
+    | `iam:CreateRole` on `role/gw230529-*` | Allow、条件なし |
+    | `iam:AttachRolePolicy` on `role/gw230529-*` | Allow、**`iam:PolicyARN` 条件なし** |
+    | `iam:PutRolePolicy` on `role/gw230529-*` | Allow、条件なし |
+    | `iam:PassRole` on `role/gw230529-*` | Allow、条件なし |
+    | `ec2:*` on `*` | Allow、条件なし |
+
+    `gw230529-*` という名前の role を作り、`AdministratorAccess` を
+    アタッチし (**アタッチ先の role は絞られているが、アタッチする policy は
+    絞られていない**)、`RunInstances` で EC2 に渡して IMDS から資格情報を読む。
+    `DenyDestructiveEc2OnForeignResources` は破壊的アクションしか見ていないので
+    `RunInstances` は素通りする。
+
+    **誤った安心を与える記述が一番たちが悪い**ので、削除ではなく訂正として残す。
+
+    対処は下記「operator 資格情報の設計」。MFA 必須の role を挟むことで、
+    この経路に届くのが MFA を持つ本人だけになる。経路そのものを塞ぐには
+    `iam:AttachRolePolicy` への `iam:PolicyARN` 条件 (この repo が実際に
+    アタッチするのは `AmazonSSMManagedInstanceCore` の 1 つだけ) と、
+    インラインポリシー用の **permissions boundary** が要る。後者は未実施
+
+### operator 資格情報の設計 (2026-08-26 決定)
+
+**人間が使う長期アクセスキーだけが、静的な資格情報として残っていた。**
+ノードは最初から instance profile + role なので静的キーを持っていない
+(`modules/iam`)。つまりワークロード側では「ローテーションを自動化」ではなく
+**「長期キーを無くす」**という解き方を既にしていた。
+
+| | IaC に入れる | 理由 |
+| --- | --- | --- |
+| ポリシー文書 / role / trust policy / MFA 条件 | **入れる** | 宣言的な事実 |
+| **自分が認証に使うキーの材料** | **入れない** | 依存が循環する |
+| 他プリンシパルのキー | 入れてよい | 依存の向きが一方向 |
+
+`aws_iam_access_key` を Terraform に入れない理由は 2 つ:
+
+1. **secret が state に平文で入り、state バケットは versioned**。後から消しても
+   全バージョンに残る。「流出が心配だから IaC 化する」で、キーを S3 の
+   消せない場所に恒久的に置くことになる
+2. **Terraform が認証に使う資格情報を Terraform が管理する**。apply が途中で
+   失敗すると手元に使える資格情報が無く、state ロックは今アクセスを失った
+   バケットの中。bootstrap / foundation / compute を寿命で分けたのと同じ理屈
+
+採用した構成:
+
+```
+[profile gw230529-bootstrap]   静的キー。単体では何もできない
+[profile gw230529]             role_arn + mfa_serial + source_profile
+```
+
+- role `gw230529-terraform-operator` は **`stacks/bootstrap`** が持つ。
+  foundation/compute はこの role で apply されるので、そこに置くと
+  「自分を作る権限を自分が与える」循環になる。bootstrap が state をローカルに
+  置いているのと同じ理由
+- trust policy は `aws:MultiFactorAuthPresent = true` を **`Bool` で**要求する。
+  `BoolIfExists` はキーが無いリクエストを通してしまい、この条件の存在意義を消す
+- role には `prevent_destroy`。ユーザー側を絞った後にこの role を消すと
+  **アカウントから締め出される** (復旧には admin が要る)
+- ユーザー側は `policies/terraform-bootstrap-user.json` — `sts:AssumeRole` と
+  自分のキーのローテーションのみ。適用は **admin から** (`iam:PutUserPolicy` は
+  operator ポリシーに無い)
+
+**キーのローテーションは手作業のまま**で、README の「Terraform で完結しない
+手作業」に 3 つ目として記録した。role を挟んだことでローテーション頻度が
+効かなくなる — キー単体では何もできないので。
+
+**副作用として `make check` の隠れた依存が露見した。** `terraform init
+-backend=false` はオフラインではなく、S3 backend で初期化済みのディレクトリでは
+毎回 backend に手を伸ばす。静的キーが MFA 無しで黙って答えていたので
+見えていなかった。`.terraform` があれば init を飛ばすようにして、
+**プリコミットチェックは資格情報ゼロで通る**ようになった。
+
+**`make login` が必要になった理由**: Terraform の AWS provider は MFA トークンを
+聞けない (`AssumeRoleTokenProvider session option not set`)。AWS CLI の
+`~/.aws/cli/cache` も Go SDK は読まない。`eval "$(make login)"` で
+一時資格情報を環境変数に入れる。
 - **user_data の Phase 4 TODO** — シミュレーション起動コマンドは
   本体 repo の Phase 2–3 (ローカル dx=28 run) でマウント構成と np≥2 の挙動が
   確定してから埋める

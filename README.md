@@ -143,6 +143,11 @@ container image ever entering the plan.
 make setup             # create .env, backend.hcl and terraform.tfvars from templates
                        # then edit every CHANGEME value
 
+eval "$(make login)"   # assume the operator role with MFA
+                       # Terraform cannot prompt for an MFA token itself, so the
+                       # session goes in the environment. fmt, validate,
+                       # check-secrets and check need no session at all.
+
 make check-permissions # confirm the operator can do everything, creating nothing
 make region-scout      # compare candidate regions before committing to one
 
@@ -156,6 +161,8 @@ make fetch-inputs      # download the gallery parfile and FUKA initial data
 make upload-inputs     # derive the cloud parfile from it and upload
 
 make init-compute
+eval "$(make login)"   # assume the operator role with MFA -- needed by every
+                       # target below, and by every terraform command
 make run               # launch the spot node
 make ssm               # open a shell on it
 make throughput        # read sec/iter and the cost projection out of the run log
@@ -191,7 +198,35 @@ physics at all and needs no inputs. A 16 GiB instance cannot hold any grid
 that both fits and runs, so the rehearsal exercises the operational paths —
 slot rotation, interruption flush, restore — with a synthetic payload instead.
 
-Two manual steps have no Terraform equivalent:
+Three manual steps have no Terraform equivalent:
+
+0. **Rotate the operator access key.** The role, its trust policy and the MFA
+   condition are all in `stacks/bootstrap`; the key itself deliberately is not.
+   `aws_iam_access_key` writes the secret into Terraform state in plaintext,
+   and the state bucket is versioned, so it would survive in every past
+   version of the file after any attempt to remove it. Worse, the credential
+   Terraform authenticates with would then be managed by Terraform: an apply
+   that fails half way leaves no working credential, and the state lock sits
+   in the bucket that credential just lost access to.
+
+   The policy, the role and the trust relationship are declarative facts and
+   belong in code. A secret is not a declarative fact.
+
+   ```bash
+   aws iam create-access-key --user-name gw230529     # a user may hold two
+   # put the new one in ~/.aws/credentials under [gw230529-bootstrap]
+   eval "$(make login)" && make check-permissions     # prove it is equivalent
+   aws iam update-access-key --user-name gw230529 --access-key-id <old> --status Inactive
+   # leave it inactive for a day, then
+   aws iam delete-access-key --user-name gw230529 --access-key-id <old>
+   ```
+
+   Deactivate before deleting. Inactive is reversible and deletion is not, and
+   the gap is where a forgotten copy of the old key announces itself.
+
+   How often this needs doing is no longer very interesting, which is the
+   point of the role: on its own the key cannot assume anything and has no
+   permissions of its own, so a leak is a nuisance rather than an incident.
 
 1. **Confirm the SNS subscriptions.** The first `apply-foundation` sends a
    confirmation mail for each of the two topics. Until the "Confirm

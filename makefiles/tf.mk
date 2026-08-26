@@ -11,6 +11,14 @@
 # Ordinary flow:  make setup -> check-permissions -> bootstrap -> foundation
 #                 -> check-alerts -> push-image -> fetch-inputs
 #                 -> upload-inputs -> run -> ssm -> stop
+#
+# Everything that talks to AWS needs a session first:
+#
+#   eval "$(make login)"
+#
+# which assumes the operator role with MFA and puts the temporary credentials
+# in the environment. Terraform cannot prompt for an MFA token itself. The
+# offline targets -- fmt, validate, check-secrets, check -- need no session.
 
 # Load .env when present (AWS_PROFILE, AWS_REGION, scout settings).
 ifneq (,$(wildcard .env))
@@ -76,6 +84,10 @@ check-permissions: ## Simulate every IAM action against a live principal (PRINCI
 check-permissions-policy: ## Simulate the same actions against policies/terraform-operator.json
 	@scripts/check_permissions.sh --policy policies/terraform-operator.json
 
+.PHONY: login
+login: ## Assume the operator role with MFA: eval "$(make login)"
+	@scripts/assume_operator_role.sh
+
 .PHONY: check-alerts
 check-alerts: ## Fail unless both SNS topics still have a confirmed subscriber
 	@scripts/check_alerts.sh
@@ -98,7 +110,8 @@ validate: ## Validate every stack without contacting a backend
 	@# initialised against the S3 backend, every later init still reaches for
 	@# it, so re-running it here made a pre-commit check depend on a live AWS
 	@# session. That went unnoticed while a static access key answered
-	@# silently.
+	@# silently; requiring MFA to assume the operator role turned it into a
+	@# hard failure. `validate` on its own is genuinely offline.
 	@#
 	@# A stack whose modules or providers changed will fail with terraform
 	@# saying so and naming init as the fix, which is the right place to be
