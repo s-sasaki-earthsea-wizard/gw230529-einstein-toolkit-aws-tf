@@ -38,3 +38,9 @@ budget_period_start = "2026-08-01_00:00"
 # allocation tag in the Billing console. An unactivated tag filter matches
 # nothing, and a budget that matches nothing never alerts.
 # cost_allocation_tag = { key = "Project", value = "gw230529" }
+
+# Only used to scope the read-only observer role's access to the state bucket.
+# Leave it commented out to fall back to the "gw230529-tfstate-*" pattern the
+# bootstrap stack creates the bucket under; set it to the name already in
+# backend.hcl to pin the grant to exactly one bucket.
+# state_bucket_name = "gw230529-tfstate-CHANGEME"

@@ -113,7 +113,9 @@ scripts/
   check_secrets.sh     Fail if a tracked file carries an account id or ARN
   check_alerts.sh      Fail unless both SNS topics still have a confirmed subscriber
 policies/
-  terraform-operator.json   The single IAM policy the Terraform principal needs
+  terraform-operator.json        The single IAM policy the Terraform principal needs
+  terraform-bootstrap-user.json  What the IAM user itself keeps: assume the two
+                                 project roles, and rotate its own access key
 ```
 
 The stacks are split by lifetime, not by environment. `terraform destroy` in
@@ -133,6 +135,9 @@ container image ever entering the plan.
   keeps destructive EC2 actions off anything not tagged `Project=gw230529`.
   See [policies/README.md](policies/README.md) for what can and cannot be
   scoped, and why
+- For watching a run rather than changing one, nothing beyond the same key:
+  `stacks/foundation` creates a read-only `gw230529-observer` role that is
+  assumed without MFA. See [Watching a run without MFA](#watching-a-run-without-mfa)
 - Spot vCPU quota (`L-34B43A08`) of at least 192 in the chosen region.
   `make region-scout` reports the current value; us-east-1 and us-west-2
   commonly sit at 256 already, us-east-2 at 5
@@ -242,6 +247,54 @@ Three manual steps have no Terraform equivalent:
    and when the budgets are narrowed to that tag. Leave
    `cost_allocation_tag` unset until then — a budget filtered on an
    unactivated tag matches nothing and silently never fires.
+
+### Watching a run without MFA
+
+`gw230529-terraform-operator` requires MFA, which is the right answer for
+anything that changes infrastructure and the wrong one for watching it. During
+the 2026-08-26 recovery test every call that blocked was read-only — the
+`CURRENT` marker, a slot listing, the bootstrap log while the run was in
+flight, `make throughput`, `make heartbeat`, `DescribeInstances` to tell
+"finished" from "stuck" — and each one had to be relayed to whoever was
+holding the MFA device.
+
+`stacks/foundation` therefore also creates `gw230529-observer`: the same IAM
+user, no MFA condition, and read access to the data bucket, the foundation and
+compute state files, four EC2 describes, CloudWatch metrics and Cost Explorer.
+Nothing it carries can create, change, destroy or spend.
+
+```bash
+make output-foundation   # copy observer_profile_snippet into ~/.aws/config
+```
+
+```ini
+[profile gw230529-observer]
+role_arn       = arn:aws:iam::<account>:role/gw230529-observer
+source_profile = gw230529-bootstrap
+region         = us-west-2
+```
+
+```bash
+make throughput AWS_PROFILE=gw230529-observer
+make heartbeat  AWS_PROFILE=gw230529-observer
+aws s3 ls s3://<data-bucket>/<run>/checkpoints/slot-b/ --profile gw230529-observer
+```
+
+Run those from a shell that has **not** run `eval "$(make login)"`. An operator
+session already in the environment wins over `AWS_PROFILE`, and since the
+operator can do everything the observer can, the difference never surfaces as
+an error — a check meant to prove the observer works would pass without using
+it. `makefiles/tf.mk` carries the `env -u` form for when that is unavoidable.
+
+What the role costs: before it, an access key leaked on its own bought nothing
+whatsoever, because the only role it could reach demanded a second factor.
+Afterwards the same key buys read access to simulation output, checkpoints and
+two state files. That is a deliberate trade, argued in
+[stacks/foundation/observer_role.tf](stacks/foundation/observer_role.tf) along
+with the alternative that was rejected — pointing the operator profile at a
+`credential_process` that generates the TOTP code from a stored seed, which
+satisfies `aws:MultiFactorAuthPresent` while putting both factors on one disk
+under one uid.
 
 ## Cost model
 

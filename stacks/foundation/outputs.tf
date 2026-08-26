@@ -67,3 +67,22 @@ output "docker_push_commands" {
     docker push ${module.registry.repository_url}:latest
   EOT
 }
+
+output "observer_role_arn" {
+  description = "Read-only role for watching a run. Assumable without MFA."
+  value       = aws_iam_role.observer.arn
+}
+
+output "observer_profile_snippet" {
+  description = <<-EOT
+    Ready-to-paste ~/.aws/config for the read-only profile. No mfa_serial, so
+    the CLI assumes it and renews it without ever prompting -- which is the
+    point. It sources the same static key as the operator profile.
+  EOT
+  value       = <<-EOT
+    [profile ${var.observer_user_name}-observer]
+    role_arn       = ${aws_iam_role.observer.arn}
+    source_profile = ${var.observer_user_name}-bootstrap
+    region         = ${var.aws_region}
+  EOT
+}

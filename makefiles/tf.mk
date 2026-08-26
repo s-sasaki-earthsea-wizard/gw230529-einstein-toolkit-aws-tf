@@ -19,6 +19,17 @@
 # which assumes the operator role with MFA and puts the temporary credentials
 # in the environment. Terraform cannot prompt for an MFA token itself. The
 # offline targets -- fmt, validate, check-secrets, check -- need no session.
+#
+# Watching a run needs no session either. The read-only targets run against
+# the observer profile, which is assumed without MFA:
+#
+#   make throughput AWS_PROFILE=gw230529-observer
+#   make heartbeat  AWS_PROFILE=gw230529-observer
+#
+# A command line variable is the reliable way to pass it, because the include
+# below would otherwise override the environment -- but see the unexport just
+# after it, which is why this has to be a shell with no operator session in
+# it.
 
 # Load .env when present (AWS_PROFILE, AWS_REGION, scout settings).
 ifneq (,$(wildcard .env))
@@ -33,6 +44,15 @@ endif
 # which means assuming the operator role by itself, which it cannot do,
 # because it cannot prompt for an MFA token. The eval would appear to succeed
 # and the very next make target would fail.
+#
+# The consequence for AWS_PROFILE=gw230529-observer: in a shell that has
+# already run `eval "$(make login)"`, the operator session in the environment
+# wins and the profile is ignored. That fails *silently*, because the operator
+# can do everything the observer can -- so a check meant to prove the observer
+# works would pass without ever using it. Verify from a clean shell, or:
+#
+#   env -u AWS_SESSION_TOKEN -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
+#     make throughput AWS_PROFILE=gw230529-observer
 ifdef AWS_SESSION_TOKEN
 unexport AWS_PROFILE
 endif

@@ -129,3 +129,33 @@ variable "cost_allocation_tag" {
   })
   default = null
 }
+
+# ------------------------------------------------------------------
+# Observer role
+# ------------------------------------------------------------------
+variable "observer_user_name" {
+  description = <<-EOT
+    IAM user permitted to assume the read-only observer role.
+
+    The same user that assumes the operator role. Naming it directly in a
+    trust policy is what lets the assumption work in this account without an
+    identity-based sts:AssumeRole grant -- a same-account trust policy that
+    names the principal is sufficient on its own.
+  EOT
+  type        = string
+  default     = "gw230529"
+}
+
+variable "state_bucket_name" {
+  description = <<-EOT
+    Terraform state bucket. Used for one thing only: scoping the observer
+    role's read access to it.
+
+    Null falls back to the "<name_prefix>-tfstate-*" pattern the bootstrap
+    stack creates it under. The real name lives in backend.hcl, which
+    Terraform does not expose to the configuration, so pinning it exactly
+    means repeating it here.
+  EOT
+  type        = string
+  default     = null
+}

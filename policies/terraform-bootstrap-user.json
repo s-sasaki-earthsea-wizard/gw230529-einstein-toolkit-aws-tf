@@ -2,10 +2,13 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "AssumeTheOperatorRoleWhichIsWhereEveryOtherPermissionLives",
+      "Sid": "AssumeTheProjectRolesWhichAreWhereEveryOtherPermissionLives",
       "Effect": "Allow",
       "Action": "sts:AssumeRole",
-      "Resource": "arn:aws:iam::*:role/gw230529-terraform-operator"
+      "Resource": [
+        "arn:aws:iam::*:role/gw230529-terraform-operator",
+        "arn:aws:iam::*:role/gw230529-observer"
+      ]
     },
     {
       "Sid": "ManageOwnAccessKeysBecauseRotationMustNotNeedAnAdministrator",

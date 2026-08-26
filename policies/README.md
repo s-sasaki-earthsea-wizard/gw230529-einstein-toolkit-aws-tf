@@ -1,4 +1,40 @@
-# IAM policy for the Terraform operator
+# IAM policies applied by hand
+
+Two documents live here. Neither is applied by Terraform: they describe what
+the *human* principal carries, and a credential Terraform authenticates with
+cannot be managed by Terraform without the apply that fails half way leaving
+nothing to authenticate with.
+
+| File | Attached to | By |
+| --- | --- | --- |
+| `terraform-operator.json` | the `gw230529-terraform-operator` **role** | `stacks/bootstrap`, which reads this file |
+| `terraform-bootstrap-user.json` | the `gw230529` **user** | an administrator, by hand |
+
+`terraform-bootstrap-user.json` narrows the user to two things: assuming the
+project's roles, and rotating its own access key. It names both roles
+explicitly —
+
+```
+arn:aws:iam::*:role/gw230529-terraform-operator
+arn:aws:iam::*:role/gw230529-observer
+```
+
+— and not `role/gw230529-*`. A wildcard there would recreate the escalation
+shape this whole arrangement is about: create a role whose name starts with
+the prefix, attach more to it, assume it.
+
+(That said, in this account neither entry is what makes the assumption work.
+Both trust policies name the user's ARN directly, and a same-account trust
+policy that names its principal is sufficient on its own — which is why
+`make login` succeeds today against a user policy containing no `sts:` action
+at all. The list is here to state the intent, not to carry it.)
+
+The read-only `gw230529-observer` role itself is not in this directory. It is
+created by `stacks/foundation`, with its policy written inline as a Terraform
+document, because unlike the two above nothing about it needs an
+administrator or a simulation before attachment.
+
+## The operator policy
 
 `terraform-operator.json` is the single policy the Terraform principal needs.
 It replaces the AWS managed policies rather than supplementing them — attach
