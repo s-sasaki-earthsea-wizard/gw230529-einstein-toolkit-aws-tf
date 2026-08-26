@@ -26,6 +26,14 @@
 # two is a real finding, not noise -- it is the tax the run pays outside the
 # evolution loop, and the budget has to carry it.
 #
+# A log is not necessarily one run. `run_name` decides where the sidecar
+# syncs, so a recovered run restarted under the same name appends to the same
+# cactus-stdout.log -- which is the point, because that is how a run reclaimed
+# by spot continues. What it means here is that two consecutive info lines can
+# be days apart with no node in between, and nothing in the arithmetic knows
+# that. So the log is split on wall clock gaps and only the last segment is
+# measured; --segment picks another.
+#
 # The window matters more than the arithmetic. Phase 2 of the simulation
 # repository once read 30 sec/iter off iterations 32-36 of a run whose settled
 # rate was 43, because the start of a run is dominated by things that happen
@@ -42,6 +50,9 @@
 #   --target-time M    physical time to project to, in M (default 2000)
 #   --usd-per-hour X   spot price used for the projection (default 2.978)
 #   --window-from IT   start the window at iteration IT instead of by time
+#   --gap-minutes N    wall clock gap that separates two runs (default 10)
+#   --segment WHICH    which run in the log to measure: a number, "last"
+#                      (default) or "all" to ignore the split entirely
 #
 # Examples:
 #   scripts/read_throughput.sh
@@ -60,6 +71,12 @@ TARGET_TIME=2000
 # a different instance type -- the projection is linear in it.
 USD_PER_HOUR=2.978
 WINDOW_FROM=""
+# A gap longer than this, and far longer than the loop's own scale, means the
+# node was not running. Ten minutes clears every legitimate pause by an order
+# of magnitude: the 85.7 GB checkpoint write stops every rank for about 76
+# seconds, and the worst non-checkpoint stall measured is 91.
+GAP_MINUTES=10
+SEGMENT=last
 SOURCE=""
 
 while [ $# -gt 0 ]; do
@@ -68,7 +85,9 @@ while [ $# -gt 0 ]; do
     --target-time)  TARGET_TIME="$2";  shift 2 ;;
     --usd-per-hour) USD_PER_HOUR="$2"; shift 2 ;;
     --window-from)  WINDOW_FROM="$2";  shift 2 ;;
-    -h|--help)      sed -n '36,50p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --gap-minutes)  GAP_MINUTES="$2";  shift 2 ;;
+    --segment)      SEGMENT="$2";      shift 2 ;;
+    -h|--help)      sed -n '/^# Usage:/,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)             echo "unknown option: $1" >&2; exit 2 ;;
     *)              SOURCE="$1"; shift ;;
   esac
@@ -127,6 +146,8 @@ awk \
   -v target_time="${TARGET_TIME}" \
   -v usd_per_hour="${USD_PER_HOUR}" \
   -v window_from="${WINDOW_FROM}" \
+  -v gap_minutes="${GAP_MINUTES}" \
+  -v segment="${SEGMENT}" \
   '
 function isleap(y) { return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 }
 
@@ -209,6 +230,56 @@ END {
 
   have_clock = (stamped > unstamped / 4)
 
+  # ---------------- split the log into runs ----------------
+  #
+  # It cost a 12,746 USD projection to notice this, on 2026-08-26: the 4.8 day
+  # gap between the 8/21 throughput probe and the 8/26 recovery test, both
+  # written to the same log under the same run_name, showed up as a single
+  # 413,603 second "stall" and pulled the mean to 462 sec/iter against a true
+  # 3.75. The cross-check said the two readings disagreed and to trust the
+  # wall clock, which was exactly backwards -- the wall clock was the one
+  # counting time the node did not exist.
+  #
+  # A gap is a boundary only if it clears both an absolute floor and a large
+  # multiple of the scale of the loop itself. The floor stops a slow regrid
+  # from splitting a run; the multiple stops a legitimately slow run from
+  # being split by its own checkpoint writes.
+  nseg = 1; seg_lo[1] = 1
+  if (have_clock) {
+    k = 0
+    for (i = 1; i < n; i++) {
+      if (wall[i] <= 0 || wall[i + 1] <= 0) continue
+      k++; g[k] = (wall[i + 1] - wall[i]) / (it[i + 1] - it[i])
+    }
+    if (k > 0) {
+      for (i = 1; i < k; i++) for (j = i + 1; j <= k; j++) if (g[j] < g[i]) { t = g[i]; g[i] = g[j]; g[j] = t }
+      scale = (k % 2) ? g[(k + 1) / 2] : (g[k / 2] + g[k / 2 + 1]) / 2
+      cut = gap_minutes * 60
+      if (scale * 20 > cut) cut = scale * 20
+      for (i = 1; i < n; i++) {
+        if (wall[i] <= 0 || wall[i + 1] <= 0) continue
+        if (wall[i + 1] - wall[i] > cut) {
+          seg_hi[nseg] = i
+          nseg++; seg_lo[nseg] = i + 1; seg_gap[nseg] = wall[i + 1] - wall[i]
+        }
+      }
+    }
+  }
+  seg_hi[nseg] = n
+
+  if (segment == "all") {
+    lo = 1; hi = n; seg_label = "all"
+  } else if (segment == "" || segment == "last") {
+    lo = seg_lo[nseg]; hi = seg_hi[nseg]; seg_label = sprintf("%d (the last)", nseg)
+  } else {
+    sn = segment + 0
+    if (sn < 1 || sn > nseg) {
+      printf "no segment %s in this log -- it holds %d.\n", segment, nseg
+      exit 2
+    }
+    lo = seg_lo[sn]; hi = seg_hi[sn]; seg_label = sprintf("%d", sn)
+  }
+
   # ---------------- initial data ----------------
   if (import_levels > 0)
     printf "initial data   %d levels imported, %.0f s (%.1f min) total\n", \
@@ -224,25 +295,47 @@ END {
     have_clock ? "wall clock stamps present" : "NO wall clock stamps -- Carpet reading only"
   print ""
 
+  # ---------------- more than one run in the log? ----------------
+  if (nseg > 1) {
+    printf "*** %d SEPARATE RUNS IN THIS LOG ***\n", nseg
+    for (i = 1; i <= nseg; i++) {
+      printf "    %d: iterations %d..%d, %d info lines", \
+        i, it[seg_lo[i]], it[seg_hi[i]], seg_hi[i] - seg_lo[i] + 1
+      if (i > 1) printf "   after a %s gap", hms(seg_gap[i])
+      print ""
+    }
+    print "    The node did not exist across the gaps, so measuring the whole"
+    print "    log measures the gaps. --segment N picks one, --segment all"
+    print "    overrides this and measures the lot."
+    printf "measuring      segment %s\n", seg_label
+    print ""
+  }
+
   # ---------------- pick the window ----------------
-  start = 1
+  start = lo
   if (window_from != "") {
-    for (i = 1; i <= n; i++) if (it[i] >= window_from + 0) { start = i; break }
+    for (i = lo; i <= hi; i++) if (it[i] >= window_from + 0) { start = i; break }
     reason = sprintf("from iteration %d as asked", it[start])
   } else if (have_clock) {
-    for (i = 1; i <= n; i++)
-      if (wall[i] > 0 && wall[i] - wall[1] >= skip_minutes * 60) { start = i; break }
-    reason = sprintf("first %g minutes of evolution discarded", skip_minutes)
+    for (i = lo; i <= hi; i++)
+      if (wall[i] > 0 && wall[i] - wall[lo] >= skip_minutes * 60) { start = i; break }
+    if (start > lo)
+      reason = sprintf("first %g minutes of evolution discarded", skip_minutes)
+    else
+      reason = sprintf("all of it -- shorter than the %g minute skip", skip_minutes)
   } else {
     # No clock: fall back to a fixed number of iterations. 64 is what the
     # dx=28 run needed before its reading stopped climbing.
-    for (i = 1; i <= n; i++) if (it[i] >= it[1] + 64) { start = i; break }
-    reason = "first 64 iterations discarded (no clock to measure minutes with)"
+    for (i = lo; i <= hi; i++) if (it[i] >= it[lo] + 64) { start = i; break }
+    if (start > lo)
+      reason = "first 64 iterations discarded (no clock to measure minutes with)"
+    else
+      reason = "all of it -- fewer than the 64 iterations usually discarded"
   }
-  if (start >= n) { start = 1; reason = reason " -- log too short, using all of it" }
+  if (start >= hi) { start = lo; reason = reason " -- log too short, using all of it" }
 
-  printf "window         iterations %d..%d (%s)\n", it[start], it[n], reason
-  window_span = (have_clock && wall[start] > 0 && wall[n] > 0) ? wall[n] - wall[start] : -1
+  printf "window         iterations %d..%d (%s)\n", it[start], it[hi], reason
+  window_span = (have_clock && wall[start] > 0 && wall[hi] > 0) ? wall[hi] - wall[start] : -1
   if (window_span >= 0)
     printf "               %s of wall clock\n", hms(window_span)
 
@@ -261,8 +354,8 @@ END {
   settled = 1
   if (window_span >= 0) {
     if (window_span < 20 * 60) { settled = 0; why = sprintf("%s of wall clock, against the 20 min two Carpet averaging windows need", hms(window_span)) }
-  } else if (it[n] - it[start] < 256) {
-    settled = 0; why = sprintf("%d iterations, against the 256 a rate needs to stop climbing", it[n] - it[start])
+  } else if (it[hi] - it[start] < 256) {
+    settled = 0; why = sprintf("%d iterations, against the 256 a rate needs to stop climbing", it[hi] - it[start])
   }
   if (!settled) {
     print ""
@@ -277,27 +370,27 @@ END {
   # Median rather than mean: the sample right after a checkpoint write is a
   # genuine outlier and the median is what a long run behaves like.
   m = 0
-  for (i = start; i <= n; i++) if (ptph[i] > 0) { m++; s[m] = ptph[i] }
+  for (i = start; i <= hi; i++) if (ptph[i] > 0) { m++; s[m] = ptph[i] }
   if (m > 0) {
     for (i = 1; i < m; i++) for (j = i + 1; j <= m; j++) if (s[j] < s[i]) { t = s[i]; s[i] = s[j]; s[j] = t }
     med = (m % 2) ? s[(m + 1) / 2] : (s[m / 2] + s[m / 2 + 1]) / 2
     printf "Carpet         %.2f M/h median over the window (last %.2f, min %.2f, max %.2f)\n", \
-      med, ptph[n], s[1], s[m]
+      med, ptph[hi], s[1], s[m]
     printf "               = %.2f sec/iter at dt = %.4f M\n", dt * 3600 / med, dt
     carpet_mph = med
   }
 
   # ---------------- the wall clock ----------------
-  if (have_clock && wall[start] > 0 && wall[n] > 0 && wall[n] > wall[start]) {
-    elapsed = wall[n] - wall[start]
-    iters = it[n] - it[start]
+  if (have_clock && wall[start] > 0 && wall[hi] > 0 && wall[hi] > wall[start]) {
+    elapsed = wall[hi] - wall[start]
+    iters = it[hi] - it[start]
     spi_all = elapsed / iters
 
     # Per-sample rates, so that the stop-the-world events can be separated
     # from the evolution loop. The median sample is the loop; the mean over
     # the whole window is what the run actually costs.
     k = 0
-    for (i = start; i < n; i++) {
+    for (i = start; i < hi; i++) {
       if (wall[i] <= 0 || wall[i + 1] <= 0) continue
       d = (wall[i + 1] - wall[i]) / (it[i + 1] - it[i])
       k++; r[k] = d
@@ -335,7 +428,7 @@ END {
     print ""
     printf "stalls over %.0f sec/iter (three times the median sample):\n", spi_med * 3
     found = 0
-    for (i = start; i < n; i++) {
+    for (i = start; i < hi; i++) {
       if (wall[i] <= 0 || wall[i + 1] <= 0) continue
       d = (wall[i + 1] - wall[i]) / (it[i + 1] - it[i])
       if (d > spi_med * 3) {
@@ -356,7 +449,7 @@ END {
   # ---------------- projection ----------------
   print ""
   print "----------------------------------------------------------------"
-  remaining_iters = (target_time - pt[n]) / dt
+  remaining_iters = (target_time - pt[hi]) / dt
   if (remaining_iters < 0) remaining_iters = 0
   total_iters = target_time / dt
   total_h = total_iters * spi / 3600
@@ -365,7 +458,7 @@ END {
   printf "  %.0f iterations from t = 0, %.1f h of evolution, %.0f USD at %.3f USD/h\n", \
     total_iters, total_h, total_h * usd_per_hour, usd_per_hour
   printf "  still to run from t = %.1f M: %.1f h, %.0f USD\n", \
-    pt[n], remaining_iters * spi / 3600, remaining_iters * spi / 3600 * usd_per_hour
+    pt[hi], remaining_iters * spi / 3600, remaining_iters * spi / 3600 * usd_per_hour
   print ""
   print "Add the initial data import once, and whatever the merger costs above"
   print "the inspiral -- this projection is linear in a rate measured before it."
