@@ -226,26 +226,63 @@ con2prim の反復回数は増えうる。**38.5 時間は下限に近い値と�
 - **cold start 18 分に対し、recovery は evolution 開始まで約 10 分**。
   うち 7.5 分が 175 GB のダウンロードで、Cactus 側は速い
 
-**【要調査】再開後のスループットが 3 倍遅い。独立な 2 本目の読みで裏が取れた。**
+**【2026-08-26 解消】再開後のスループットが 3 倍遅い問題は、
+ページキャッシュが NUMA 配置を壊していたのが原因だった。**
 
-| | 8/21 probe | 8/26 recovery |
-| --- | --- | --- |
-| Carpet `physical_time_per_hour` | 53.93 M/h (中央値) | **18.90 M/h** (min = last) |
-| = sec/iter | 4.00 | **11.43** |
-| 壁時計 | 4.16 | 12.36 |
+| | 8/21 probe (fresh) | 8/26 recovery (sync=1) | 8/26 検証 run (sync=5) |
+| --- | --- | --- | --- |
+| 壁時計 sec/iter | 4.16 | 12.36 | 8.0 → **4.08** |
+| 投影 (t=2000 M) | 115 USD | 341 USD | **113 USD** |
 
-**Carpet の値は Cactus の内部時計**で、ノードが存在しなかった時間も、
-sidecar の挙動も知らない。それが 2.85 倍を報告している。壁時計側の
-12.36 (比 0.93) と整合するので、**壁時計の測り方の問題ではない**。
-`NOT SETTLED` (evolution 11 分 vs 窓 20 分) は依然として付くが、
-min = last = 18.90 は tail が落ち着いた値であることを示唆している。
+**当初の候補だった sidecar 干渉 (sync=1) は犯人ではなかった。** 検証 run で
+`sync_interval_minutes = 5` に戻しても遅いままで、しかも 3 つの独立な計測が
+sidecar を否定した:
 
-候補は issue #11 — この run では `sync_interval_minutes` を 1 に下げており、
-np=192 を 192 コアに載せているので空きコアが無く、sidecar に奪われた 1 ランクを
-全 191 ランクがバリアで待つ。**もし本物なら本番見積りが 115 → 341 USD になる**
-ので、次の優先事項。切り分けは `sync_interval_minutes = 5` に戻して
-`PROBE_MINUTES = 60` で 1 本回すだけ (recovery と sync=1 をまだ同時に
-変えているので、この 2 本目の読みでも交絡は解けていない)。
+- **tick ログの実測**: 何もしない tick のコストは **1–9 秒 / 5 分** (0.3–3%)
+- **Carpet の内訳** (`carpet-timing..asc` の it_1280): `time_io` は **1.5%**。
+  時間は全部 `time_computing` に消えていた
+- **`top`**: 192 ランクが全部 R で 100%、`%Cpu 89.9 us / 5.2 id`。
+  **CPU を奪われているのではなく、回っているのに遅い**
+
+**真因 — 順番の事故。recovery だけがこの順番を踏む:**
+
+1. restore が 162 GiB の checkpoint をボリュームに落とす。全バイトが
+   ページキャッシュを通り、c7a.48xlarge は 184 GiB の NUMA ノード 2 枚なので
+   **片方が完全に埋まる**
+2. Cactus が 208 GiB を確保する。`vm.zone_reclaim_mode` の既定は 0 で、
+   **空きが無いノードは自分の clean なキャッシュを回収せず、他ノードから
+   確保を満たす**。first touch でリモートに置かれ、そのまま固定される
+3. ノード上の実測: node0 が FilePages 115 GiB / AnonPages 68 GiB、
+   node1 が 6 / 140。**node0 側 96 ランクの working set の約 35% が
+   インターコネクト越し**。帯域律速のステンシルには致命的
+4. AutoNUMA は気づくが直せない — **150 GiB 分のページを移動**しても
+   node0 に行き場が無い。この churn 自体もコスト
+
+**fresh run が速いのは初期データを綺麗なメモリに生成するから。**
+Phase 5 でこれが見つからなかったのは、recovery を測るまで
+この順番を踏まなかったからで、性能の話ではなく手順の話だった。
+
+**因果は介入で閉じた。** 走行中のノードで `echo 1 > /proc/sys/vm/drop_caches`
+を叩いたところ、**6 分で 8.44 → 3.79 sec/iter に戻り**、そのまま 54 分維持した。
+
+修正は `templates/user_data.sh.tftpl` の section 3、restore 直後・
+`docker run` の前の 1 行 (`sync; echo 1 > /proc/sys/vm/drop_caches`)。
+払う代償は recovery の HDF5 読み込み 85.7 GiB がキャッシュではなく
+ボリュームから来ること — gp3 1000 MB/s で **約 86 秒、1 回だけ**。
+
+**#11 の修正はこれとセットで要る。** タイマーは `OnBootSec` なので、
+実測では restore 完了の **2 秒後**に sidecar が 162 GiB を読み直し始めていた。
+Cactus が first touch している最中にキャッシュを埋め戻すので、
+drop_caches だけでは 2 秒しか稼げない。stamp を restore 直後に書いて
+最初の tick を黙らせることが、drop_caches の効果を保証している。
+
+**併せて確定した数字:**
+
+- **定常状態の checkpoint は傷を作らない** — 85.7 GiB の書き込みで 85 秒
+  (毎時なら wall clock の 2.4%、設計時の見積り 2.1% とほぼ一致)。
+  メモリ確保がとうに終わっているので配置には影響しない
+- **recovery のコストはゼロ**。settled 窓 (54 分・800 iteration) で
+  **4.08 sec/iter**、fresh の 4.16 と区別がつかない
 
 **副産物: `read_throughput.sh` が 2 run 分のログを 1 本として測っていた。**
 `run_name` が同じなので sidecar が同じ `cactus-stdout.log` に追記し、
@@ -274,7 +311,17 @@ evolution 時間に算入されていた。結果は 462 sec/iter・**12,746 USD
   76h run で確定 約 1.6 時間の節約 vs 中断 1 回あたり約 15 分の追加ロス
 - **同一リージョンの転送料は 0**。残るのは PUT リクエスト (checkpoint 1 回
   約 $0.05) と保管料 (312 GB × 1 週間で約 $1.7) のみ
-- sync は変更が無ければ LIST のみで終わるので、間隔を短くしても実質無料
+- sync は変更が無ければ LIST のみで終わるので、間隔を短くしても実質無料。
+  **2026-08-26 に実測: 何もしない tick は 1–9 秒** (9 秒は 2D 出力の直後)。
+  tick ごとの出力は `<run>/output/sync.log` に残る — journal はインスタンスと
+  一緒に死ぬので、以前は最後の 1 tick 分しか読めなかった
+- **restore 直後に `--stamp-only` で stamp を書く** (issue #11)。書かないと
+  最初の tick が「全部変わった」と判断し、**いま落としてきたばかりの
+  162 GiB を反対の slot に上げ直す**。無駄なだけでなく、Cactus が
+  メモリを first touch している最中にそれを読み返すので、
+  上記「Phase 5 recovery 実証」の NUMA 劣化を悪化させる。
+  stamp が指す集合は CURRENT が既に指しているものなので、
+  push を省いても失うものは無い
 
 ### シミュレーション repo Phase 1–2 の実測を受けた対応 (2026-08-20)
 
