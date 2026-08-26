@@ -26,6 +26,17 @@ include .env
 export
 endif
 
+# A session from `make login` has to win over the profile in .env.
+#
+# Without this, every recipe gets AWS_PROFILE re-exported underneath the
+# temporary credentials, and the SDK goes back to resolving that profile --
+# which means assuming the operator role by itself, which it cannot do,
+# because it cannot prompt for an MFA token. The eval would appear to succeed
+# and the very next make target would fail.
+ifdef AWS_SESSION_TOKEN
+unexport AWS_PROFILE
+endif
+
 TF := terraform
 LOCAL_IMAGE ?= gw230529-et:local
 IMAGE_TAG ?= latest
