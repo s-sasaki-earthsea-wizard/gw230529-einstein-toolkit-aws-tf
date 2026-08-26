@@ -228,6 +228,47 @@ else
 fi
 aws s3 sync "$${S3_RUN}/output/" "$${WORK_DIR}/simulations/" --only-show-errors
 
+# Forget everything the restore just read, before anything allocates.
+#
+# This one line is worth a factor of two on every recovered run. Measured on
+# 2026-08-26 (issue #11): a run restored from S3 evolved at 7-12 sec/iter
+# against the 3.75-4.16 a fresh run of the identical parfile reaches at the
+# identical iterations. Dropping the cache mid-run took it straight back to
+# 3.5-4.0 within six minutes, which is what turns this from a theory into a
+# cause.
+#
+# The mechanism is an ordering accident, and only recovery has the ordering:
+#
+#   1. The restore above pulls 162 GiB of checkpoints onto the volume. Every
+#      byte lands in the page cache on its way through, and a c7a.48xlarge is
+#      two NUMA nodes of 184 GiB, so one of them fills completely.
+#   2. Cactus then allocates 208 GiB. vm.zone_reclaim_mode is 0 by default,
+#      which means a node with no free memory does not reclaim its own clean
+#      page cache -- it satisfies the allocation from the other node. So
+#      first touch places the memory remotely and there it stays.
+#   3. Measured on the node: node0 held 115 GiB of file pages and 68 GiB of
+#      anonymous memory, node1 held 6 and 140. Half the ranks run on node0's
+#      cores with about 35% of their working set across the interconnect,
+#      and this is a bandwidth bound stencil.
+#   4. AutoNUMA notices and cannot fix it -- 150 GiB of pages migrated with
+#      nowhere to land. That churn is itself part of the cost.
+#
+# A fresh run never hits this because initial data is generated into clean
+# memory. That is the whole reason the fault survived Phase 5 unnoticed until
+# a recovery was measured.
+#
+# What it costs: the recovery read of the newest generation (85.7 GiB) now
+# comes off the volume rather than out of the cache, about 86 seconds at the
+# 1000 MB/s the gp3 is provisioned for, and Docker re-reads the image layers
+# it has already pulled, a few seconds more. Both are paid once.
+#
+# "1" is page cache only; dentries and inodes are not the problem and are
+# cheap to keep. It has to happen here rather than later because the only
+# thing that matters is that it precedes the container.
+sync
+echo 1 > /proc/sys/vm/drop_caches
+echo "dropped the page cache after the restore ($(free -g | awk '/^Mem:/ {print $NF}') GiB available)"
+
 # ------------------------------------------------------------------
 # 3b. Hand the run directories to the user the container runs as
 #
