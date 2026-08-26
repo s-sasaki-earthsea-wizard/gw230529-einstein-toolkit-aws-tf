@@ -203,6 +203,61 @@ per-iteration コストを上げる可能性は残っている。`Carpetregrid2`
 M 単位で固定、`num_levels` も 8 で固定なので格子点数は増えないが、
 con2prim の反復回数は増えうる。**38.5 時間は下限に近い値として扱うこと**。
 
+### Phase 5 recovery 実証 (2026-08-26、issue #3)
+
+**spot 中断からの復帰がクラウドで成立した。** ローカル (sibling Phase 2) では
+確認済みだったが、クラウド固有の 3 点 — S3 からの復元、復元後の uid 委譲、
+自分が書いていない checkpoint への `autoprobe` — は未検証だった。
+8/21 の probe が残した `phase5-throughput-dx19p2` に同じ `run_name` で
+再起動する形で実施。約 30 分・約 1.5 USD。
+
+| 判定項目 | 結果 |
+| --- | --- |
+| S3 からの復元 | 08:22:51 `restoring checkpoints from slot-b` |
+| Kadath import なしの recovery | `Filling took` 0 件。`it_1049` / t=62.94 M から再開 |
+| 停止点を越えた evolution | `it_1124` / t=67.44 M まで |
+| 終了時 checkpoint の slot 回転 | 08:48:50 push → 08:50:25 `CURRENT is now slot-b` |
+| ノードの自滅 | cloud-init 08:50:25 完了、08:51:34 poweroff |
+
+- **`CURRENT` を push 成功後に書く規律が効いた。** 途中まで「回転しなかった」
+  と読み違えたが、実際は slot-b → slot-a → slot-b と **2 回転**して戻っていた。
+  マーカーだけでは回転の有無を判定できない。**slot の中身の世代番号を見ること**
+- **run をまたいだ刈り取りが実証された**。復元した `it_897` は最終 slot に無い
+- **cold start 18 分に対し、recovery は evolution 開始まで約 10 分**。
+  うち 7.5 分が 175 GB のダウンロードで、Cactus 側は速い
+
+**【要調査】再開後のスループットが 3 倍遅い。独立な 2 本目の読みで裏が取れた。**
+
+| | 8/21 probe | 8/26 recovery |
+| --- | --- | --- |
+| Carpet `physical_time_per_hour` | 53.93 M/h (中央値) | **18.90 M/h** (min = last) |
+| = sec/iter | 4.00 | **11.43** |
+| 壁時計 | 4.16 | 12.36 |
+
+**Carpet の値は Cactus の内部時計**で、ノードが存在しなかった時間も、
+sidecar の挙動も知らない。それが 2.85 倍を報告している。壁時計側の
+12.36 (比 0.93) と整合するので、**壁時計の測り方の問題ではない**。
+`NOT SETTLED` (evolution 11 分 vs 窓 20 分) は依然として付くが、
+min = last = 18.90 は tail が落ち着いた値であることを示唆している。
+
+候補は issue #11 — この run では `sync_interval_minutes` を 1 に下げており、
+np=192 を 192 コアに載せているので空きコアが無く、sidecar に奪われた 1 ランクを
+全 191 ランクがバリアで待つ。**もし本物なら本番見積りが 115 → 341 USD になる**
+ので、次の優先事項。切り分けは `sync_interval_minutes = 5` に戻して
+`PROBE_MINUTES = 60` で 1 本回すだけ (recovery と sync=1 をまだ同時に
+変えているので、この 2 本目の読みでも交絡は解けていない)。
+
+**副産物: `read_throughput.sh` が 2 run 分のログを 1 本として測っていた。**
+`run_name` が同じなので sidecar が同じ `cactus-stdout.log` に追記し、
+**8/21 と 8/26 の間の 4.8 日 (413,603 秒) が 1 個の "stall" として**
+evolution 時間に算入されていた。結果は 462 sec/iter・**12,746 USD** の投影。
+しかも `cross-check` が「壁時計を信じろ」と言っていて、この局面では
+**それが逆**だった (壁時計の方がノードの居ない時間を数えていた)。
+2026-08-26 に壁時計ギャップでのセグメント分割を実装 (issue #12)。
+既定は最後のセグメントのみを測り、`--segment N` / `--segment all` で選べる。
+**中断→再開が設計の前提なのだから、ログが 1 本の連続 run である保証は
+どこにも無かった。**
+
 ### checkpoint 同期の設計 (2026-08-20 決定)
 
 本体 repo の Phase 2 実測 (checkpoint 25 GB @ dx=28 → フル解像度 78 GB) を
@@ -298,12 +353,15 @@ sibling repo の Phase 1 (Docker ビルド) / Phase 2 (ローカル smoke) か�
   `recover = "autoprobe"` が `it_256` を自動で拾い、**Kadath import 実行 0 回**。
   recover 読み込み + 終了時 checkpoint で 94 秒、cold start の 2065 秒に対し
   33 分の節約。spot 中断からの復帰は成立する
-- **【要対応】`IO::checkpoint_keep` は run をまたいで効かない** — sibling の
-  Phase 2 で 2 run 後に 3 世代 77 GB が残った。フル解像度は 1 世代 78 GB なので
-  `root_volume_size_gb = 500` は **6 世代で埋まる**。中断→再開を数回やれば届く。
-  slot 方式が固定するのは **S3 側だけ**で、EBS 側は別途刈る必要がある。
-  sidecar に「`CURRENT` が指す世代と書き込み中の世代以外を消す」処理を入れる。
-  `templates/user_data.sh.tftpl` に `TODO(phase5)` として記録済み
+- 【2026-08-26 解消】**`IO::checkpoint_keep` は run をまたいで効かない** —
+  sibling の Phase 2 で 2 run 後に 3 世代 77 GB が残った件。sidecar 側の刈り取りは
+  **すでに実装済み** (`templates/user_data.sh.tftpl` の sync スクリプト、
+  push の前に keep 世代だけ残す)。この項の「要対応」は実装前の記述で、古かった。
+
+  2026-08-26 の recovery テストで **run をまたいだ刈り取りが実証された**。
+  S3 から復元した `it_897` / `it_1049` に終了時 checkpoint `it_1124` が加わり、
+  最終 slot は `it_1049` + `it_1124` の 2 世代。`it_897` は消えている。
+  下記「Phase 5 recovery 実証」
 - **【要対応】本番インスタンスタイプは Phase 5 のメモリ実測で確定する**。
   np=192 で単一ノードに載らない場合、マルチノード MPI は
   「学習目的の選択肢」から**必要条件**に格上げされる。
@@ -431,6 +489,94 @@ sibling repo の Phase 1 (Docker ビルド) / Phase 2 (ローカル smoke) か�
 - **user_data の Phase 4 TODO** — シミュレーション起動コマンドは
   本体 repo の Phase 2–3 (ローカル dx=28 run) でマウント構成と np≥2 の挙動が
   確定してから埋める
+
+### 監査用 observer role の設計 (2026-08-26 決定、issue #10)
+
+**MFA を要求すべきなのは「変える」側だけで、「見る」側ではなかった。**
+8/26 の recovery テストで詰まった呼び出しは全部 read だった —
+`CURRENT` マーカー、slot の `ls`、run 中の `bootstrap.log` 取得、
+`make throughput` / `make heartbeat`、「終わった」と「詰まった」を
+区別するための `DescribeInstances`。どれも operator role は要らないのに、
+毎回 MFA デバイスを持つ人間に中継させていた。
+
+`stacks/foundation` が `gw230529-observer` を作る。同じ IAM user が principal、
+**MFA 条件なし**、権限は read のみ。
+
+| | scope |
+| --- | --- |
+| data bucket | `ListBucket` + `GetObject`。バケット ARN は `module.storage.bucket_arn` から |
+| state bucket | `ListBucket` は無条件、`GetObject` は **`foundation/*` と `compute/*` だけ** |
+| EC2 | `Describe{Instances,InstanceStatus,SpotInstanceRequests,Volumes}` on `*` |
+| CloudWatch | metric read on `*` |
+| Cost Explorer | `GetCostAndUsage` / `GetCostForecast` on `*` |
+
+- **`credential_process` + ローカル TOTP シードは却下**。6 桁の入力は消えるが、
+  2 要素が同じ uid の同じディスクに載る。AWS は `MultiFactorAuthPresent = true`
+  と評価し続けるので、`operator_role.tf` の条件が買っているものだけが消える。
+  そもそも問題の形が違う — 摩擦は read 側にあり、read は第2要素の要らない部分
+- **state を `foundation/*` だけに絞ると `make throughput` / `make heartbeat` が
+  落ちる**。両方とも `stacks/compute output -raw run_prefix` を読む
+  (`read_throughput.sh:85`、`tf.mk` の heartbeat)。issue #10 の権限表と
+  "Done when" はこの点で矛盾していたので、`compute/*` を足した
+- **2 つの prefix を列挙するのは `bootstrap/` を締め出すためではない。**
+  `stacks/bootstrap` は state をローカルに置いている (自分がバケットを作るので
+  自分をそこに置けない) ので、このバケットに `bootstrap/` という key は
+  そもそも無い。列挙が買っているのは別のもの — **後から足したスタックが
+  「初めて state を書いた瞬間に読める」のではなく、明示的に足すまで scope 外**
+  であること。issue #10 の "Done when" にあった「bootstrap の state が
+  AccessDenied になること」は、証明できない条件だった
+- **state バケットの `ListBucket` は絞らない**。露出するのは stack 名だけで、
+  それは repo に書いてある。絞る価値があるのは object の read の方
+- **`ce:GetCostAndUsage` は入れた**。暴走支出に気づくのが watcher の仕事の大半で、
+  budget アラートは閾値でしか鳴らない。露出はアカウント全体の請求データだが、
+  このアカウントはこのプロジェクトしか持っていない。**この role で最初に削るなら
+  ここ**、と `observer_role.tf` にコメントで書いた
+- **`prevent_destroy` は付けない**。operator と違って、消えても締め出されない。
+  ただし foundation を destroy すると observer profile は無言で AccessDenied になる
+
+**払う対価を明記しておく。** これまでは access key 単体で**何も**できなかった
+(唯一届く role が第2要素を要求したから)。以後は同じ key で simulation output と
+checkpoint、foundation/compute の state が読める。作れず・変えられず・壊せず・
+使えない (spend できない) のは変わらない。
+
+**`terraform-bootstrap-user.json` は 2 本の ARN を明示列挙に変えた** (#8 step 2 が
+まだ未適用なので、順序問題は発生しない)。`role/gw230529-*` のワイルドカードは
+使わない — それは #8 step 3 のエスカレーション形状そのもの。
+
+**ただし同一アカウントではこの列挙は「意図の記録」であって効力ではない可能性が
+高い。** trust policy が user の ARN を名指ししていれば identity 側の
+`sts:AssumeRole` は不要で、その証拠がこの repo にある:
+`policies/terraform-operator.json` には `sts:` のアクションが 1 つも無いのに
+`make login` は通っている。確認は
+`aws iam list-attached-user-policies --user-name gw230529` と
+`list-user-policies` の 2 発。
+
+**検証結果 (2026-08-26)**:
+
+| | 結果 |
+| --- | --- |
+| `sts:GetCallerIdentity` | MFA プロンプトなしで assumed-role として通る |
+| `make throughput` / `make heartbeat` | 通る。**compute state の read が効いている証明** |
+| `s3:PutObject` (data bucket) | AccessDenied |
+| `ec2:TerminateInstances --dry-run` | UnauthorizedOperation |
+| `iam:ListUsers` | AccessDenied |
+| state の scope 外 read | **未証明**。下記 |
+
+- **state バケットの scope 外テストは設計ミスだった。** `bootstrap/terraform.tfstate`
+  を読もうとしたが、**bootstrap は state をローカルに置いている**ので object が
+  存在しない。返ってきたのは 403 ではなく 404。ただし S3 は `ListBucket` が
+  無いとき存在しない key にも 403 を返すので、**404 が返ったこと自体が
+  `ListBucket` の疎通確認**にはなっている。
+  state バケットには `foundation/` と `compute/` しか無く、scope 外に読める
+  ものが物理的に存在しない。証明を取るなら operator で捨てオブジェクトを 1 つ
+  置いて読み失敗させる (+ version ごと消す) 必要がある。優先度低
+
+**`AWS_PROFILE=gw230529-observer` は operator セッションに負ける。**
+`tf.mk` の `ifdef AWS_SESSION_TOKEN → unexport AWS_PROFILE` があるので、
+`eval "$(make login)"` 済みのシェルでは環境の一時資格情報が使われる。
+operator は observer にできることを全部できるので **エラーにならず、
+observer を検証したつもりが operator で通る**。検証は必ず素のシェルで。
+
 
 ## 言語設定
 
