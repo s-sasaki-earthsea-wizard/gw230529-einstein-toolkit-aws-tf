@@ -149,8 +149,34 @@
         "ssm:DescribeSessions",
         "ssm:StartSession",
         "ssm:ResumeSession",
-        "ssm:TerminateSession"
+        "ssm:TerminateSession",
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommands",
+        "ssm:ListCommandInvocations"
       ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SsmSendCommandRunShellScript",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": "arn:aws:ssm:*::document/AWS-RunShellScript"
+    },
+    {
+      "Sid": "SsmSendCommandProjectInstances",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": "arn:aws:ec2:*:*:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "ssm:resourceTag/Project": "gw230529"
+        }
+      }
+    },
+    {
+      "Sid": "CloudWatchReadMetrics",
+      "Effect": "Allow",
+      "Action": "cloudwatch:GetMetricStatistics",
       "Resource": "*"
     },
     {
