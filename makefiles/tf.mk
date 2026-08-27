@@ -194,7 +194,7 @@ output-%: ## Show a stack's outputs, e.g. make output-foundation
 ##@ Image and inputs
 
 .PHONY: fetch-inputs
-fetch-inputs: ## Download the gallery parfile and FUKA initial data (checksum pinned)
+fetch-inputs: ## Download the gallery artefacts, checksum pinned (ARGS=--reference adds the reference run log)
 	@INPUTS_DIR="$(INPUTS_DIR)" scripts/fetch_inputs.sh $(ARGS)
 
 .PHONY: upload-inputs
