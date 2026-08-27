@@ -6,6 +6,11 @@ a single spot compute node, an S3 bucket that acts as the system of record,
 a private registry for the Einstein Toolkit image, and the cost guardrails
 that keep the whole project inside a 300 USD cap.
 
+Design reasoning lives in [docs/](docs/); every **measured number** — memory,
+checkpoint sizes, import times, throughput — lives in the
+[project wiki](https://github.com/s-sasaki-earthsea-wizard/gw230529-einstein-toolkit-aws-tf/wiki),
+each figure stamped with the conditions it was taken under.
+
 ## Architecture
 
 ```mermaid
@@ -282,7 +287,7 @@ region         = us-west-2
 ```bash
 make throughput AWS_PROFILE=gw230529-observer
 make heartbeat  AWS_PROFILE=gw230529-observer
-aws s3 ls s3://<data-bucket>/<run>/checkpoints/slot-b/ --profile gw230529-observer
+aws s3 ls s3://<data-bucket>/checkpoints/<run>/slot-b/ --profile gw230529-observer
 ```
 
 Run those from a shell that has **not** run `eval "$(make login)"`. An operator
@@ -317,20 +322,24 @@ between phases without spending.
 
 The production run is the only large item, and it is now measured rather than
 projected. A 90 minute probe at full resolution on 2026-08-21 read **4.16
-sec/iter** at dt = 0.06 M, so t = 2000 M is 33,333 iterations — **38.5 hours,
-115 USD on c7a.48xlarge**. Truncating at t = 1500 M, past the merger at
-t ≈ 713 M, would be 28.9 hours and 86 USD.
+sec/iter** at dt = 0.06 M. The production end point is **t = 1750 M** (decided
+2026-08-27): the remnant disc settles by merger + ~180 M and the reference is
+essentially flat well before 2000 M, while 1500 M would end right on the
+ringdown's heels at the r = 500 extraction radius. 29,167 iterations —
+**33.7 hours, ~100 USD on c7a.48xlarge**. The gallery's 2000 M would be 38.5
+hours and 115 USD; `CCTK_FINAL_TIME` overrides the end point at upload time.
 
-That replaces an extrapolation of 38–76 hours and 113–226 USD, and lands just
-past its optimistic end: a Genoa core is 2.07× the reference cluster's, where
-1.5–2× was assumed.
+The measured rate replaces an extrapolation of 38–76 hours and 113–226 USD,
+and lands just past its optimistic end: a Genoa core is 2.07× the reference
+cluster's, where 1.5–2× was assumed.
 
 Two conditions belong with the number. The rate carries every overhead the
 probe paid — the hourly 85.7 GB checkpoint costs 76 seconds of stopped ranks,
 the 2D output 31 seconds per 1024 iterations — but the probe covered t = 0–63
-M, which is 3% of the run and pure inspiral. The merger is not in it, so treat
-38.5 hours as close to a floor. Read the live log with `make throughput` while
-the production run is going rather than assuming it holds.
+M, which is pure inspiral. The merger is not in it; the dx=28 dry run crossed
+its merger with no visible slowdown, so this is residual risk rather than
+expected cost. Read the live log with `make throughput` while the production
+run is going rather than assuming the rate holds.
 
 c7a.48xlarge is the production type on measurement too. A full resolution 192
 rank run measured 137 GiB across the node, 37% of c7a's 384 GiB — first on
