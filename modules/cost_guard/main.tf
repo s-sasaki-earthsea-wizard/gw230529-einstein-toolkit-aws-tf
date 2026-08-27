@@ -43,16 +43,24 @@ resource "aws_sns_topic_policy" "cost_alerts" {
 }
 
 locals {
+  # Thresholds and the cap are written as project spend, then shifted by what
+  # the account had already spent this calendar year. Without the shift they
+  # measure the account's whole year, because an ANNUALLY budget ignores
+  # time_period_start and this one carries no cost filter. See
+  # variable preexisting_spend_usd.
+  budget_amount = var.budget_limit_usd + var.preexisting_spend_usd
+  thresholds    = [for t in var.budget_thresholds_usd : t + var.preexisting_spend_usd]
+
   # Four thresholds per budget keeps room for the forecast notification that
   # is appended to the final budget, staying under the AWS limit of five.
-  threshold_chunks = chunklist(var.budget_thresholds_usd, 4)
+  threshold_chunks = chunklist(local.thresholds, 4)
 
   budgets = {
     for idx, chunk in local.threshold_chunks :
     format("%02d", idx + 1) => concat(
       [for t in chunk : { notification_type = "ACTUAL", threshold = t }],
       idx == length(local.threshold_chunks) - 1
-      ? [{ notification_type = "FORECASTED", threshold = var.budget_limit_usd }]
+      ? [{ notification_type = "FORECASTED", threshold = local.budget_amount }]
       : []
     )
   }
@@ -63,12 +71,16 @@ resource "aws_budgets_budget" "project" {
 
   name         = "${var.name_prefix}-${each.key}"
   budget_type  = "COST"
-  limit_amount = tostring(var.budget_limit_usd)
+  limit_amount = tostring(local.budget_amount)
   limit_unit   = "USD"
 
   # The cap is a project total spanning several months, not a monthly
-  # allowance, so the budget period is annual and anchored to the project
-  # start date.
+  # allowance, so the budget period is annual rather than monthly.
+  #
+  # It is NOT anchored to the project start date, though it reads as if it
+  # were: AWS measures an ANNUALLY budget over the calendar year and ignores
+  # time_period_start, while storing it verbatim so no drift appears.
+  # preexisting_spend_usd is what compensates.
   time_unit         = "ANNUALLY"
   time_period_start = var.budget_period_start
 

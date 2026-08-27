@@ -32,13 +32,48 @@ variable "budget_thresholds_usd" {
 }
 
 variable "budget_period_start" {
-  description = "Start of the budget period, formatted YYYY-MM-DD_HH:MM."
+  description = <<-EOT
+    Start of the budget period, formatted YYYY-MM-DD_HH:MM.
+
+    Note that AWS ignores this for an ANNUALLY budget and measures the
+    calendar year instead. The value is stored and read back unchanged, so
+    terraform plan reports no drift and nothing here reveals the override.
+    Confirmed 2026-08-27: a budget carrying 2026-08-01_00:00 alerted on
+    spend going back to 2026-01-01. See preexisting_spend_usd.
+  EOT
   type        = string
 
   validation {
     condition     = can(regex("^\\d{4}-\\d{2}-\\d{2}_\\d{2}:\\d{2}$", var.budget_period_start))
     error_message = "budget_period_start must look like 2026-08-01_00:00."
   }
+}
+
+variable "preexisting_spend_usd" {
+  description = <<-EOT
+    Spend already on this account for the current calendar year before the
+    project started, in USD. Added to the budget amount and to every
+    threshold, so both keep reading as project spend.
+
+    This exists because two AWS behaviours combine badly. An ANNUALLY budget
+    is measured over the calendar year: time_period_start is accepted,
+    stored, and then ignored, and Terraform sees no drift because the value
+    it wrote is the value read back. And with cost_allocation_tag null there
+    is no cost filter, so the budget measures the whole account. Together
+    they mean a threshold of 150 fires on everything the account has spent
+    since January 1st, including projects that ended before this one began.
+
+    Measured 2026-08-27 with Cost Explorer: 137.32 USD between 2026-01-01 and
+    2026-08-18, nearly all of it a previous project's NAT gateway and RDS
+    instance, torn down in April. Rounded to 140 to absorb the ~0.08 USD/day
+    of unrelated spend that continues on the account.
+
+    Set to 0 on 2027-01-01, when the calendar year rolls over and that spend
+    leaves the budget period. Set to 0 as well if a cost filter is ever
+    enabled -- see cost_allocation_tag.
+  EOT
+  type        = number
+  default     = 0
 }
 
 variable "cost_allocation_tag" {

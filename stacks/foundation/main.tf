@@ -56,6 +56,7 @@ module "cost_guard" {
   budget_limit_usd      = var.budget_limit_usd
   budget_thresholds_usd = var.budget_thresholds_usd
   budget_period_start   = var.budget_period_start
+  preexisting_spend_usd = var.preexisting_spend_usd
   cost_allocation_tag   = var.cost_allocation_tag
 }
 
