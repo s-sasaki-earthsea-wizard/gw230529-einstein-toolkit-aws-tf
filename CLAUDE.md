@@ -385,6 +385,44 @@ sibling repo の Phase 1 (Docker ビルド) / Phase 2 (ローカル smoke) か�
 - 【入れ違い】申し送りノートの「`sync_interval_minutes = 20` は妥当」は、
   同日先行して 5 分 + slot 方式に変更済みのため superseded
 
+### 本番 run の起動手順 (2026-08-27 時点、残りはこれだけ)
+
+準備は全て完了している。**残っているのは tfvars の本番化と `make run` のみ。**
+
+```hcl
+run_mode            = "simulation"
+instance_type       = "c7a.48xlarge"
+run_name            = "prod-dx19p2-1750m"
+parfile             = "bhns_gw230529.par"
+image_tag           = "sha256:<digest>"   # 必ず digest で pin
+mpi_procs           = 192
+root_volume_size_gb = 500
+sync_interval_minutes = 5
+availability_zone   = "us-west-2d"
+```
+
+digest は `aws ecr describe-images --repository-name gw230529/einstein-toolkit
+--image-ids imageTag=latest --query 'imageDetails[0].imageDigest' --output text`。
+**tag ではなく digest なのは、中断→再起動でタグが動いていると別ビルドに
+checkpoint を restore してしまうため。**
+
+`make upload-inputs` → `make check-alerts` → `make plan-compute` → `make run`。
+
+**run 中の監視は observer で無人で回る** (MFA 不要、素のシェルで):
+
+```bash
+env -u AWS_SESSION_TOKEN -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
+  make throughput AWS_PROFILE=gw230529-observer     # sec/iter とコスト投影
+  make validate-run AWS_PROFILE=gw230529-observer   # リファレンスとの照合
+  make ledger AWS_PROFILE=gw230529-observer         # 稼働率とダウンタイム
+  make heartbeat AWS_PROFILE=gw230529-observer      # メモリとディスク
+```
+
+budget アラートは run 中に 2 発鳴る想定 (190 で約 11.9 h 時点、240 で約 28.7 h)。
+どちらもプロジェクト支出 50 / 100 USD に相当する意味のある通知。
+**FORECASTED 440 は誤報で鳴りうる** — 年次 budget の予測が直近バーンを引くため。
+実支出と突き合わせて読む運用で合意済み (2026-08-27)。
+
 ### 未確定 / 保留
 
 - 【2026-08-21 解消】**フル解像度の sec/iter** — 実測 **4.16 sec/iter**
@@ -729,15 +767,19 @@ compute の出力は `run_prefix` から用途別 (`run_log_url` / `heartbeat_ur
 - **#15**: sync の flock 直列化。タイマー tick と最終 sync / spot flush の
   競合を封じた (待つ方式 — 直接呼び出しは落とせない push だから)
 - **#16**: observer に `DescribeLaunchTemplate{s,Versions}` +
-  `DescribeInstanceAttribute`。「何で起動したか」を state を読まずに監査できる
+  `DescribeInstanceAttribute`。「何で起動したか」を state を読まずに監査できる。
+  **注意: user_data は gzip されている** — `base64 -d | gunzip` が要る
 - **#6**: operator に `ssm:SendCommand` (document / instance の 2 文に分割、
   instance 側は Project タグ条件) + `cloudwatch:GetMetricStatistics` +
-  コマンド結果の read。simulator は 115 actions に増えた
+  コマンド結果の read。simulator は 115 actions に増えた。
+  **【要対応】ポリシー文書は repo に入ったが IAM ユーザーへの適用は未実施**。
+  `iam:PutUserPolicy` は operator に無いので admin から
+  `put-user-policy`。追加のみで削除は無いのでいつ適用してもよい
 - **image_tag が digest を受けられなかった**のを修正 (`sha256:` なら `@` で
   結合)。本番は digest pin が必須 — 中断→再起動で mutable tag が動くと
   checkpoint を別ビルドに restore する
 
-**リファレンスとの突き合わせバリデーション (設計確定)**:
+**リファレンスとの突き合わせバリデーション (実装・実証済み)**:
 
 - 参照 run `bhns_20252103` (同一 dx=19.2、t=3051 M まで) の stdout が
   CarpetIOBasic info line を 4 iteration ごとに持ち、**うちの
@@ -751,8 +793,65 @@ compute の出力は `run_prefix` から用途別 (`run_log_url` / `heartbeat_ur
   合体前後で「故障か物理か」の判別が変わり、固定ルールは必ず片側で誤る。
   Syota は console 目視 + cron の aws cli でも課金を監視する
 - `make fetch-inputs ARGS=--reference` が参照ログを checksum pin で取得
-  (573 MB、sibling の tarball を upstream/ に置けばダウンロード省略)。
-  バリデータ自体は run 中に書く (クリティカルパスに乗せない)
+  (573 MB、sibling の tarball を upstream/ に置けばダウンロード省略)
+- **`scripts/validate_against_reference.sh` (`make validate-run`) として実装済み。**
+  判定基準にもチューナブルを入れていない — **直近窓の中央値が、それ以前の
+  最悪値を上回ったか**。誰かが選んだ係数が要らない形にした
+- **限界**: 一致を測れたのは t=0–156 M の純 inspiral のみ。合体 (t≈713 M) 以降は
+  丸め差が育つので**バンドは物理的に広がる**。これが自動 abort を足さない
+  2 つ目の理由 — 固定ルールは合体の片側で必ず誤る
+
+### recovery probe による本番前実証 (2026-08-27、約 2.2 USD)
+
+`phase5-throughput-dx19p2` に 4 セグメント目として再起動し、当日の変更を
+すべて実機で通した。**本番前に確認できることは全部確認した**。
+
+| 検証項目 | 結果 |
+| --- | --- |
+| 新レイアウトからの restore | `restoring checkpoints from slot-a` 174.3 GB / 6.5 分 |
+| NUMA 修正 (drop_caches) | `366 GiB available` |
+| #11 stamp | restore の 2 秒後、初回 tick は `no new checkpoint generation` |
+| recovery | `Recovering ... it_2220`、**Kadath import 0 回** |
+| #9 ログ分離 | `bootstrap-i-02f2299a6532fede3.log` |
+| #17 lifecycle | S3 が `rule-id="expire-checkpoints"` を返す |
+| slot 回転 | slot-a → **slot-b**、中身 it_2220 + it_2605 |
+| run をまたぐ刈り取り | it_1800 が消えている |
+| 自滅 | 07:10:17 terminated |
+
+**NUMA 修正が確定した:**
+
+| | 8/26 (修正前) | **今回** | 8/21 fresh |
+| --- | --- | --- | --- |
+| 壁時計 sec/iter | 12.36 | **3.98** | 4.16 |
+| ループ外オーバーヘッド | — | −0.6% | +23.7% |
+| cross-check | 0.908 | **1.000** | 0.961 |
+
+**recovery のコストはゼロ。** −0.6% は測定窓に checkpoint 書き込みが入らなかった
+だけで、統計的に fresh と同じと読む。
+
+**#17 の証拠は S3 自身に言わせた** — 設定を読むのではなく、同じ 450 MB の
+ファイルで `Expiration: null` → `rule-id="expire-checkpoints"` の before/after。
+`head-object` は `s3:GetObject` で足りるので observer で取れる。
+
+### ダウンタイム計測 (2026-08-27、issue #20/#21)
+
+**動機は診断ではなく実験**: 「安さのためにどの程度の遅延を許容できるか」を
+決めるには、実 wall clock と実効計算時間の比が要る (Syota の判断)。
+
+穴は 1 箇所だけだった — 中断されたノードは `bootstrap finished` 行に到達しないので
+**開始はあるが終了が無い**。spot watcher が flush の**前に**
+`logs/<run>/ended-<instance-id>.json` を書く (数百バイト、2 分の猶予に対し 1 秒未満)。
+正常終了側にも同じ形を書くので、マーカーの無いログが「まだ走っている」か
+「通知すら無く消えた」かの第 3 の結果として見える。
+
+**`make ledger` は比を 2 つに分けて出す。** 混ぜると時間の行き先が読めない:
+
+- **duty cycle** = uptime / wall clock — 中断と再起動までの遅れ
+- **compute fraction** = evolution / uptime — 起動 1 回あたり**約 13 分**
+  (boot + image pull + 174 GB restore + checkpoint 読み)
+
+probe 実測は 58.2% だが、これは 30 分しか生きないノードの値。
+**中断そのものより頻度が効く**: 4 時間で 95%、無中断 33.7 時間なら 99.4%。
 
 
 ## 言語設定
