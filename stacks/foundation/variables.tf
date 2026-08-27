@@ -117,8 +117,14 @@ variable "budget_thresholds_usd" {
 }
 
 variable "budget_period_start" {
-  description = "Start of the budget period, formatted YYYY-MM-DD_HH:MM."
+  description = "Start of the budget period, formatted YYYY-MM-DD_HH:MM. AWS ignores this for an ANNUALLY budget and measures the calendar year."
   type        = string
+}
+
+variable "preexisting_spend_usd" {
+  description = "Account spend already booked this calendar year before the project began, in USD. Shifts the cap and every threshold so both read as project spend."
+  type        = number
+  default     = 0
 }
 
 variable "cost_allocation_tag" {

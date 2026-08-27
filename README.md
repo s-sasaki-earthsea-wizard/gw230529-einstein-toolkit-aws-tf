@@ -248,6 +248,11 @@ Three manual steps have no Terraform equivalent:
    `cost_allocation_tag` unset until then — a budget filtered on an
    unactivated tag matches nothing and silently never fires.
 
+   The cost of leaving it unset is that the budget measures the whole
+   account, so spend from anything else on it counts against every
+   threshold. That produced a false alarm on 2026-08-27; see *Why the budget
+   measures the calendar year* below.
+
 ### Watching a run without MFA
 
 `gw230529-terraform-operator` requires MFA, which is the right answer for
@@ -343,6 +348,27 @@ costs when `IO::checkpoint_ID` is not set.
 The budget alerts are after the fact — AWS billing data lags 8–24 hours. Real
 time containment comes from two places instead: the spot request is capped at
 the on-demand price, and the node terminates itself when the run exits.
+
+### Why the budget measures the calendar year
+
+`budget_period_start` says `2026-08-01_00:00` and AWS ignores it. An
+`ANNUALLY` budget is measured over the calendar year; the start date is
+accepted, stored, and read back unchanged, so `terraform plan` reports no
+drift and nothing in the configuration hints at the override. Combined with an
+empty `cost_filter`, that means every threshold is measured against
+everything the account has spent since January 1st.
+
+On 2026-08-27 the 150 USD threshold fired while this project had spent 17.34
+USD. The other 137.32 came from a previous project's NAT gateway and RDS
+instance, torn down in April, still inside the same calendar year.
+
+`preexisting_spend_usd` compensates: it is added to the cap and to every
+threshold, so both keep reading as project spend while AWS keeps counting the
+year. It holds 140 for 2026 — the 137.32 measured with Cost Explorer, plus
+room for the ~0.08 USD/day of unrelated spend that continues.
+
+**Reset it to 0 on 2027-01-01**, when the calendar year rolls over and that
+spend leaves the budget period, or if a cost filter is ever enabled.
 
 ## Public repository hygiene
 

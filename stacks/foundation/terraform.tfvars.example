@@ -30,9 +30,24 @@ alert_email = "you@example.com"
 budget_limit_usd      = 300
 budget_thresholds_usd = [50, 100, 150, 200, 250, 300]
 
-# Anchor of the annual budget period. The cap is a project total spanning
-# several months, not a monthly allowance.
+# Nominal anchor of the annual budget period. The cap is a project total
+# spanning several months, not a monthly allowance.
+#
+# AWS ignores this date for an ANNUALLY budget and measures the calendar year
+# instead, while storing the value unchanged so no drift ever shows. If this
+# account carried spend earlier in the same year, that spend counts against
+# every threshold above -- set preexisting_spend_usd to cancel it out.
 budget_period_start = "2026-08-01_00:00"
+
+# Account spend already booked this calendar year before the project began.
+# Added to the cap and to every threshold, so both keep reading as project
+# spend. Measure it with:
+#
+#   aws ce get-cost-and-usage --time-period Start=<Jan 1> ,End=<project start> \
+#     --granularity MONTHLY --metrics UnblendedCost
+#
+# Reset to 0 when the calendar year rolls over, or if a cost filter is enabled.
+preexisting_spend_usd = 0
 
 # Leave the tag filter unset until `Project` has been activated as a cost
 # allocation tag in the Billing console. An unactivated tag filter matches
