@@ -55,7 +55,7 @@
 #
 # Options:
 #   --skip-minutes N   discard the first N minutes of evolution (default 15)
-#   --target-time M    physical time to project to, in M (default 2000)
+#   --target-time M    physical time to project to, in M (default 1750)
 #   --usd-per-hour X   spot price used for the projection (default 2.978)
 #   --window-from IT   start the window at iteration IT instead of by time
 #   --gap-minutes N    wall clock gap that separates two runs (default 10)
@@ -64,7 +64,7 @@
 #
 # Examples:
 #   scripts/read_throughput.sh
-#   scripts/read_throughput.sh --target-time 1500 run/cactus-stdout.log
+#   scripts/read_throughput.sh --target-time 2000 run/cactus-stdout.log
 #   scripts/read_throughput.sh --usd-per-hour 3.05 s3://bucket/run/.../log
 
 set -euo pipefail
@@ -74,7 +74,9 @@ REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
 TF="${TF:-terraform}"
 
 SKIP_MINUTES=15
-TARGET_TIME=2000
+# The production end point, decided 2026-08-27 (see upload_inputs.sh for the
+# physics). Override with --target-time for another one.
+TARGET_TIME=1750
 # us-west-2d, c7a.48xlarge, measured 2026-08-21. Override for another zone or
 # a different instance type -- the projection is linear in it.
 USD_PER_HOUR=2.978
