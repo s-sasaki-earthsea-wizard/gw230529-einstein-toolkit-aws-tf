@@ -6,25 +6,33 @@
 # dollars.
 #
 # sec/iter is the number the whole cost model rests on, and until this script
-# existed it was being eyeballed. The log offers two independent ways to get
-# it and they check each other:
+# existed it was being eyeballed. The log offers two ways to get it:
 #
 #   Carpet's own reading.  Carpet::physical_time_per_hour is the second column
 #     of the CarpetIOBasic info line, in M of simulation time per hour of wall
-#     clock. It is a trailing average over Carpet::timing_average_window_minutes
-#     (10 by default), so it settles within a few window lengths and needs no
-#     clock in the log at all -- which is why this script works on runs that
-#     predate the line stamping.
+#     clock. It is the CUMULATIVE average since the process started -- not the
+#     trailing window this script once took it for (#13). The windowed figure
+#     is a different column (current_physical_time_per_hour) that reaches only
+#     carpet-timing..asc, never the info line. A cumulative average does not
+#     settle; it converges on the mean of everything so far, and after a rate
+#     change it carries the old rate for the rest of the run. What it still
+#     buys: it needs no clock in the log at all, which is why this script
+#     works on runs that predate the line stamping.
 #
 #   The wall clock.  Runs from 2026-08-21 onwards carry an ISO timestamp on
 #     every line, so the elapsed time between two info lines divides straight
-#     into the iterations between them.
+#     into the iterations between them. This is the number the projection
+#     uses: it covers whatever window is asked for, including the seconds a
+#     checkpoint write stops every rank.
 #
-# The two agree only if nothing is being missed. Carpet's average is over a
-# window it chooses; the wall clock covers whatever window is asked for,
-# including the seconds a checkpoint write stops every rank. A gap between the
-# two is a real finding, not noise -- it is the tax the run pays outside the
-# evolution loop, and the budget has to carry it.
+# The cross-check compares the two over the same span -- the whole segment,
+# not the trimmed window -- because that is the only span over which they
+# measure the same thing. They then disagree only if the rate changed during
+# the run, which is worth knowing but is not an error in either reading. The
+# previous version compared Carpet's since-start average against a windowed
+# wall clock and told the reader to distrust the wall clock; on the first run
+# whose rate actually changed (2026-08-26, the page cache drop) that advice
+# pointed exactly the wrong way.
 #
 # A log is not necessarily one run. `run_name` decides where the sidecar
 # syncs, so a recovered run restarted under the same name appends to the same
@@ -338,10 +346,11 @@ END {
 
   # Is the window long enough to mean anything?
   #
-  # Carpet averages its own reading over 10 wall clock minutes by default, so
-  # anything shorter than a couple of those is still reporting the start-up
+  # The first minutes of evolution are dominated by things that happen once
+  # -- the first AHFinderDirect search, the initial 2D output, caches
+  # filling -- so anything under 20 minutes is still reporting the start-up
   # transient. Unclocked, iterations are the only proxy: the dx=28 run needed
-  # about 64 before its reading stopped climbing, so 256 is a fair margin.
+  # about 64 before its rate stopped climbing, so 256 is a fair margin.
   #
   # This guard is here because the mistake has already been made twice. The
   # simulation repository read 30 sec/iter off iterations 32-36 of a run whose
@@ -350,7 +359,7 @@ END {
   # nearest dollar if nothing stops it.
   settled = 1
   if (window_span >= 0) {
-    if (window_span < 20 * 60) { settled = 0; why = sprintf("%s of wall clock, against the 20 min two Carpet averaging windows need", hms(window_span)) }
+    if (window_span < 20 * 60) { settled = 0; why = sprintf("%s of wall clock, against the 20 min the start-up transient needs to wash out", hms(window_span)) }
   } else if (it[hi] - it[start] < 256) {
     settled = 0; why = sprintf("%d iterations, against the 256 a rate needs to stop climbing", it[hi] - it[start])
   }
@@ -364,17 +373,16 @@ END {
   print ""
 
   # ---------------- the Carpet reading ----------------
-  # Median rather than mean: the sample right after a checkpoint write is a
-  # genuine outlier and the median is what a long run behaves like.
-  m = 0
-  for (i = start; i <= hi; i++) if (ptph[i] > 0) { m++; s[m] = ptph[i] }
-  if (m > 0) {
-    for (i = 1; i < m; i++) for (j = i + 1; j <= m; j++) if (s[j] < s[i]) { t = s[i]; s[i] = s[j]; s[j] = t }
-    med = (m % 2) ? s[(m + 1) / 2] : (s[m / 2] + s[m / 2 + 1]) / 2
-    printf "Carpet         %.2f M/h median over the window (last %.2f, min %.2f, max %.2f)\n", \
-      med, ptph[hi], s[1], s[m]
-    printf "               = %.2f sec/iter at dt = %.4f M\n", dt * 3600 / med, dt
-    carpet_mph = med
+  # The last value, not a median over the window: this column is the
+  # cumulative average since the process started (#13), so a median of it is
+  # just the value from the middle of the run, and applying --skip-minutes to
+  # it removes nothing the average does not still carry. The last value is
+  # the one honest reading it offers: the run-to-date mean.
+  carpet_mph = ptph[hi]
+  if (carpet_mph > 0) {
+    printf "Carpet         %.2f M/h run-to-date at the last info line (cumulative\n", carpet_mph
+    printf "               average since the process started, so it lags any rate change)\n"
+    printf "               = %.2f sec/iter at dt = %.4f M\n", dt * 3600 / carpet_mph, dt
   }
 
   # ---------------- the wall clock ----------------
@@ -404,16 +412,31 @@ END {
       printf "               overhead outside the loop: %+.1f%%\n", (spi_all / spi_med - 1) * 100
     printf "               = %.2f M/h\n", dt * 3600 / spi_all
 
-    if (carpet_mph > 0) {
-      disagree = (dt * 3600 / carpet_mph) / spi_all
-      printf "cross-check    Carpet / wall clock = %.3f", disagree
-      if (disagree < 0.9 || disagree > 1.1)
-        print "  <- they disagree; trust the wall clock and find out why"
-      else
+    # Same span on both sides: the Carpet average runs from its process start,
+    # which is (approximately) the segment start, so the wall clock side must
+    # cover the whole segment too -- not the trimmed window. Comparing a
+    # since-start average against a windowed one is only valid while the rate
+    # is constant, and a run whose rate changed is precisely the case worth
+    # catching (#13).
+    if (carpet_mph > 0 && wall[lo] > 0 && wall[hi] > wall[lo] && it[hi] > it[lo]) {
+      spi_seg = (wall[hi] - wall[lo]) / (it[hi] - it[lo])
+      disagree = (dt * 3600 / carpet_mph) / spi_seg
+      printf "cross-check    Carpet run-to-date / wall clock over the whole segment = %.3f", disagree
+      if (disagree < 0.9 || disagree > 1.1) {
+        print ""
+        print "               <- they disagree over the same span. Either the rate"
+        print "                  changed during the run (a cumulative average carries"
+        print "                  the old rate forever) or this segment does not start"
+        print "                  where its process did. The windowed wall clock figure"
+        print "                  above is the one to project from."
+      } else
         print "  (consistent)"
     }
     spi = spi_all
   } else if (carpet_mph > 0) {
+    # No clock in the log, so the run-to-date average is all there is. Fine
+    # on a steady run; on one whose rate changed it smears the change over
+    # everything before it.
     spi = dt * 3600 / carpet_mph
   } else {
     print "nothing usable in this log."
