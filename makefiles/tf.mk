@@ -25,6 +25,7 @@
 #
 #   make throughput AWS_PROFILE=gw230529-observer
 #   make heartbeat  AWS_PROFILE=gw230529-observer
+#   make validate   AWS_PROFILE=gw230529-observer
 #
 # A command line variable is the reliable way to pass it, because the include
 # below would otherwise override the environment -- but see the unexport just
@@ -263,6 +264,10 @@ ssm: ## Open a shell on the running node through SSM Session Manager
 .PHONY: throughput
 throughput: ## Read sec/iter and the cost projection out of a run log
 	@scripts/read_throughput.sh $(ARGS)
+
+.PHONY: validate
+validate: ## Compare a live run against the published reference run
+	@scripts/validate_against_reference.sh $(ARGS)
 
 .PHONY: heartbeat
 heartbeat: ## Print the latest heartbeat object written by the node
