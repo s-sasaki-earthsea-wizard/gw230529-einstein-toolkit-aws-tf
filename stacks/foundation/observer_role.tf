@@ -166,6 +166,17 @@ data "aws_iam_policy_document" "observer" {
       "ec2:DescribeInstanceStatus",
       "ec2:DescribeSpotInstanceRequests",
       "ec2:DescribeVolumes",
+
+      # What a run was launched WITH, not just whether it is running (#16).
+      # Establishing the 2026-08-26 recovery test's sync interval from
+      # outside the run required decoding user_data out of the terraform
+      # state -- which reports what the stack would launch now, not what the
+      # instance booted with. The launch template versions survive the node;
+      # DescribeInstanceAttribute reads the booted user_data while it lives.
+      # None of the three supports resource-level permissions.
+      "ec2:DescribeLaunchTemplates",
+      "ec2:DescribeLaunchTemplateVersions",
+      "ec2:DescribeInstanceAttribute",
     ]
 
     resources = ["*"]

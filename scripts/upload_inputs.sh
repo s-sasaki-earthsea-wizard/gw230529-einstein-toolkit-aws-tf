@@ -22,6 +22,16 @@
 #       so without an initial-data checkpoint every interruption pays it again
 #       before evolution can resume.
 #
+#   Cactus::cctk_final_time               2000.0 -> 1750.0
+#       Decided 2026-08-27. The dx=28 dry run and the reference both show the
+#       remnant disc mass settled by merger + ~180 M, and the gallery page
+#       shows an essentially flat state well before 2000 M. 1750 M is merger
+#       (t ~ 713 M) + ~1040 M: the full ringdown at the r=500 extraction
+#       radius (the merger signal arrives there at t ~ 1213 M) plus the early
+#       disc evolution, minus ~4.8 h / ~15 USD of flat tail. 1500 M was
+#       rejected as ending right on the ringdown's heels.
+#       Override with CCTK_FINAL_TIME for a different end point.
+#
 # The upstream file is left untouched; the cloud variant is derived into a
 # separate file. Two settings the gallery already gets right for our purposes
 # -- recover = "autoprobe" and checkpoint_keep = 2 -- are asserted rather than
@@ -75,6 +85,7 @@ BUILD_DIR="${SRC_DIR}/.cloud"
 PROBE_PARFILE="bhns_gw230529_probe.par"
 
 CADENCE_HOURS="${CHECKPOINT_WALLTIME_HOURS:-1.0}"
+FINAL_TIME="${CCTK_FINAL_TIME:-1750.0}"
 PROBE_MINUTES=""
 
 while [ $# -gt 0 ]; do
@@ -135,6 +146,13 @@ echo "Deriving the cloud parfile from ${SRC_DIR}/${PARFILE}"
 set_or_append "checkpoint_every_walltime_hours" "${CADENCE_HOURS}" "${OUT}"
 set_or_append "checkpoint_ID"                   '"yes"'            "${OUT}"
 
+# cctk_final_time is Cactus::, not IO::, so it does not go through
+# set_or_append. The gallery always sets it, so a plain rewrite suffices and
+# the assertion below catches a sed that matched nothing.
+sed -i -E \
+  "s#^([[:space:]]*Cactus::cctk_final_time[[:space:]]*=[[:space:]]*).*\$#\\1${FINAL_TIME}#" \
+  "${OUT}"
+
 echo ""
 echo "Difference from upstream:"
 diff -u "${SRC_DIR}/${PARFILE}" "${OUT}" | sed -n '3,$p' | sed 's/^/  /' || true
@@ -175,6 +193,9 @@ check_parfile() {
   assert "checkpoint_ID" \
     "^[[:space:]]*${P}::checkpoint_ID[[:space:]]*=[[:space:]]*\"?yes\"?[[:space:]]*\$" \
     "not \"yes\" -- every interruption would re-import the FUKA data"
+  assert "Cactus::cctk_final_time" \
+    "^[[:space:]]*Cactus::cctk_final_time[[:space:]]*=[[:space:]]*${FINAL_TIME}([[:space:]]|\$)" \
+    "not ${FINAL_TIME} -- the end point rewrite did not take"
   assert "recover" \
     "^[[:space:]]*${P}::recover[[:space:]]*=[[:space:]]*\"?autoprobe\"?[[:space:]]*\$" \
     "not \"autoprobe\" -- a relaunched node would start from scratch"

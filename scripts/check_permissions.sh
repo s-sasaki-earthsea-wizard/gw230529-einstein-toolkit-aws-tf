@@ -109,6 +109,7 @@ simulate() {
       --policy-input-list "${POLICY_ARGS[@]}" \
       --resource-arns "${resource}" \
       --context-entries 'ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=gw230529,ContextKeyType=string' \
+                        'ContextKeyName=ssm:resourceTag/Project,ContextKeyValues=gw230529,ContextKeyType=string' \
       --action-names "$@" \
       --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text)"
   else
@@ -116,6 +117,7 @@ simulate() {
       --policy-source-arn "${PRINCIPAL}" \
       --resource-arns "${resource}" \
       --context-entries 'ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=gw230529,ContextKeyType=string' \
+                        'ContextKeyName=ssm:resourceTag/Project,ContextKeyValues=gw230529,ContextKeyType=string' \
       --action-names "$@" \
       --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text)"
   fi
@@ -199,6 +201,17 @@ simulate "eventbridge rule" "arn:aws:events:${REGION}:${ACCOUNT}:rule/gw230529-s
   events:RemoveTargets events:DeleteRule
 simulate "session manager" "*" \
   ssm:DescribeInstanceInformation ssm:StartSession ssm:TerminateSession
+# ssm:SendCommand evaluates once against the document and once against the
+# instance; the instance side carries the Project tag condition, satisfied by
+# the ssm:resourceTag context entry above (#6).
+simulate "send command (doc)" "arn:aws:ssm:${REGION}::document/AWS-RunShellScript" \
+  ssm:SendCommand
+simulate "send command (node)" "${E}:instance/i-0123456789abcdef0" \
+  ssm:SendCommand
+simulate "command results" "*" \
+  ssm:GetCommandInvocation ssm:ListCommands ssm:ListCommandInvocations
+simulate "node metrics" "*" \
+  cloudwatch:GetMetricStatistics
 
 echo
 echo "read-only helpers"

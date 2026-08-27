@@ -27,7 +27,7 @@ flowchart LR
   end
 
   subgraph GLOBAL["us-east-1 : global service endpoints"]
-    BUDGET["AWS Budgets x2<br/>50 / 100 / 150 / 200 / 250 / 300 USD"]
+    BUDGET["AWS Budgets x2<br/>190 / 240 / 290 / 340 / 390 / 440 USD<br/>(calendar-year totals; see cost guard)"]
     ANOM["Cost Anomaly Detection"]
     CTOPIC["SNS: cost alerts"]
   end
@@ -43,6 +43,7 @@ flowchart LR
       P2["output/ expire 90d"]
       P3["artifacts/ to Deep Archive"]
       P4["heartbeat/ expire 30d"]
+      P5["logs/ expire 90d"]
     end
 
     subgraph VPC["VPC 10.20.0.0/16"]
@@ -216,21 +217,25 @@ iterations:
 | `Carpet::physical_time_per_hour`, median | 54.06 M/h (= 4.00 sec/iter) |
 | Agreement between the two independent readings | 3.9% |
 
-At 4.16 sec/iter, t = 2000 M is 33,333 iterations:
+At 4.16 sec/iter, the production end point of t = 1750 M (decided
+2026-08-27) is 29,167 iterations:
 
-| | t = 2000 M | truncated at 1500 M | (old) pessimistic 76 h |
-| --- | --- | --- | --- |
-| c7a.48xlarge at 2.978 USD/h | **115 USD, 38.5 h** | 86 USD, 28.9 h | 226 USD |
+| | **t = 1750 M (production)** | t = 2000 M (gallery) | 1500 M | (old) pessimistic 76 h |
+| --- | --- | --- | --- | --- |
+| c7a.48xlarge at 2.978 USD/h | **~100 USD, 33.7 h** | 115 USD, 38.5 h | 86 USD, 28.9 h | 226 USD |
 
 The extrapolation this replaces bracketed the run at 38–76 hours: 14,600
 core-hours on 192 cores is 76 hours at the reference cluster's per-core
 performance, and Genoa at 3.7 GHz on 12 DDR5 channels was guessed at 1.5–2×
 that. It measures 2.07×, just past the optimistic end of the band.
 
-**The lever is no longer needed.** Truncating at ~1500 M — the merger is at
-t ≈ 713 M, so the last 1300 M buys post-merger disc evolution — now saves 29
-USD rather than 57. That remains a physics decision, but it is no longer one
-that cost forces.
+**The end point is a physics decision, not a cost one.** 1750 M keeps the
+full ringdown at the r = 500 extraction radius (the merger signal arrives
+there at t ≈ 1213 M) plus the early disc evolution — the dx=28 dry run and
+the reference both show the remnant disc mass settled by merger + ~180 M —
+and drops ~4.8 h of essentially flat tail that 2000 M would buy. 1500 M was
+rejected as ending right on the ringdown's heels. The rewrite happens in
+`make upload-inputs` (`CCTK_FINAL_TIME` overrides it).
 
 **What the rate does and does not cover.** The window mean carries every
 overhead the probe actually paid: one hourly checkpoint (85.7 GB, 76 s of
@@ -239,8 +244,10 @@ analysis — AHFinderDirect every 16 iterations, VolumeIntegrals every 128,
 Multipole and the 1D/0D output every 256. It does not cover the merger. The
 probe sampled t = 0–63 M, 3% of the run and pure inspiral. Grid point counts
 will not grow — `CarpetRegrid2` radii are fixed in M and `num_levels` is
-pinned at 8 — but con2prim iteration counts can. **Treat 38.5 hours as close
-to a floor.**
+pinned at 8 — but con2prim iteration counts can. The dx=28 dry run later
+crossed its merger with no visible slowdown (2026-08-26), which demotes this
+from expected cost to residual risk — but it is low resolution evidence, so
+**treat 33.7 hours as a central estimate, not a ceiling.**
 
 There is no cheap way to measure the merger: reaching it *is* the run. Watch
 it instead, with `make throughput` against the live log.
@@ -248,7 +255,7 @@ it instead, with `make throughput` against the live log.
 Everything downstream of the run length in this document — checkpoint counts,
 S3 residency, gp3 throughput cost — is still sized against 76 hours. The
 measurement halved the expected wall clock rather than the ceiling, and a run
-resumed a few times after interruptions spends longer than 38.5 hours
+resumed a few times after interruptions spends longer than 33.7 hours
 wall clock even at this rate. The headroom stays.
 
 ### Starting a run costs 18 minutes, not 6
@@ -358,8 +365,15 @@ Two properties matter more than the sync interval, and both come from the
 accumulate every checkpoint Cactus writes — 76 generations over a 76 hour run
 at hourly checkpoints, 5.9 TB, roughly 31 USD until the seven day lifecycle
 rule expires it. That is 10% of the project budget spent on copies nothing
-will ever read. The sidecar instead alternates between `checkpoints/slot-a/`
-and `checkpoints/slot-b/`.
+will ever read. The sidecar instead alternates between
+`checkpoints/<run_name>/slot-a/` and `checkpoints/<run_name>/slot-b/`.
+
+The category comes first in every key the node writes — `checkpoints/`,
+`output/`, `heartbeat/`, `logs/`, each followed by the run name. S3 lifecycle
+filters match a prefix from the start of the key and nothing else, so this
+ordering is what connects the data to the expiry rules above. The original
+layout put the run name first, and every rule silently matched nothing until
+349 GB of dead checkpoints made it visible (issue #17, 2026-08-26).
 
 That bounds the growth but not the size, and the two are easy to conflate. A
 push mirrors the whole checkpoint directory into a slot, so S3 residency is

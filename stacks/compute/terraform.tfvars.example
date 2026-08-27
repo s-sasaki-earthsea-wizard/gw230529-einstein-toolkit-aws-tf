@@ -143,14 +143,23 @@ checkpoint_generations_kept = 2
 # One checkpoint generation measured 85.7 GB, so keep = 2 holds 171 GB of the
 # 500 GB volume and leaves the rest for diagnostic output.
 #
-# Expect 38.5 hours and 115 USD to t = 2000 M, at the 4.16 sec/iter measured on
-# 2026-08-21 -- but that was measured over t = 0-63 M, which is pure inspiral.
-# The merger at t ~ 713 M is not in it. Run `make throughput` against the live
-# log every so often rather than assuming the rate holds.
+# Expect 33.7 hours and ~100 USD to the production end point of t = 1750 M,
+# at the 4.16 sec/iter measured on 2026-08-21 -- but that was measured over
+# t = 0-63 M, which is pure inspiral. The merger at t ~ 713 M is not in it
+# (the dx=28 dry run crossed its merger with no visible slowdown, so this is
+# a residual risk rather than an expected cost). Run `make throughput`
+# against the live log every so often rather than assuming the rate holds.
+#
+# Pin image_tag to the digest, not "latest". A node relaunched after a spot
+# interruption re-pulls the reference it was configured with, and a mutable
+# tag can have moved under it mid-run -- the digest cannot. The variable's
+# description shows the command that reads it.
 # ------------------------------------------------------------------
 # run_mode            = "simulation"
 # instance_type       = "c7a.48xlarge"
-# run_name            = "phase6-production-dx19p2"
+# run_name            = "prod-dx19p2-1750m"
+# parfile             = "bhns_gw230529.par"
+# image_tag           = "sha256:CHANGEME"
 # mpi_procs           = 192
 # root_volume_size_gb = 500
 

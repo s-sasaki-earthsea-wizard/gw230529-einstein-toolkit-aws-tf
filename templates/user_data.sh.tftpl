@@ -58,7 +58,16 @@ echo "=== gw230529 bootstrap started at $(date -Is) ==="
 
 AWS_REGION="${aws_region}"
 RUN_MODE="${run_mode}"
-IMAGE="${ecr_repository_url}:${image_tag}"
+
+# A tag joins with ":", a digest with "@". Pinning by digest is what makes a
+# multi-day spot run deterministic: with a mutable tag, a node relaunched
+# after an interruption pulls whatever the tag points at *then*, which after
+# an image push mid-run would recover a checkpoint into a different build.
+IMAGE_REF="${image_tag}"
+case "$${IMAGE_REF}" in
+  sha256:*) IMAGE="${ecr_repository_url}@$${IMAGE_REF}" ;;
+  *)        IMAGE="${ecr_repository_url}:$${IMAGE_REF}" ;;
+esac
 BUCKET="${data_bucket}"
 INPUTS_PREFIX="${inputs_prefix}"
 RUN_NAME="${run_name}"
@@ -72,7 +81,22 @@ SYNC_INTERVAL_MIN="${sync_interval_minutes}"
 AUTO_SHUTDOWN="${auto_shutdown}"
 
 WORK_DIR=/opt/gw230529
-S3_RUN="s3://$${BUCKET}/$${RUN_NAME}"
+
+# S3 keys put the category first and the run name second:
+#
+#   checkpoints/<run_name>/...   output/<run_name>/...
+#   heartbeat/<run_name>/...     logs/<run_name>/...
+#
+# The bucket's lifecycle rules match on top-level prefixes, and S3 lifecycle
+# filters have no other way to match -- no suffix, no tag on a prefix. The
+# previous layout (<run_name>/checkpoints/...) silently pushed every managed
+# prefix one level down, so every expiration rule matched nothing and 349 GB
+# of dead checkpoints sat in the bucket with no expiry (issue #17). This
+# ordering is what makes the rules in modules/storage actually fire.
+S3_CKPT="s3://$${BUCKET}/checkpoints/$${RUN_NAME}"
+S3_OUTPUT="s3://$${BUCKET}/output/$${RUN_NAME}"
+S3_HEARTBEAT="s3://$${BUCKET}/heartbeat/$${RUN_NAME}"
+S3_LOGS="s3://$${BUCKET}/logs/$${RUN_NAME}"
 S3_INPUTS="s3://$${BUCKET}/$${INPUTS_PREFIX}"
 
 # Paths inside the container. The gallery parfile sets
@@ -109,6 +133,18 @@ systemctl enable --now docker
 
 mkdir -p "$${WORK_DIR}"/{simulations,checkpoints,inputs,logs}
 mkdir -p "$${WORK_DIR}/simulations/$${RUN_NAME}/run"
+
+# The instance's own id, fetched once and baked into the sidecar below. It
+# keys the bootstrap log in S3: a rerun under the same run_name must land
+# beside its predecessor's log, not on top of it (#9). The bucket has
+# versioning off by design, so an overwrite there is unrecoverable -- the
+# 2026-08-21 throughput log, the primary evidence for the sec/iter figure,
+# was lost exactly this way.
+IMDS_TOKEN="$(curl -sX PUT http://169.254.169.254/latest/api/token \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 60")"
+INSTANCE_ID="$(curl -sH "X-aws-ec2-metadata-token: $${IMDS_TOKEN}" \
+  http://169.254.169.254/latest/meta-data/instance-id)"
+echo "instance id $${INSTANCE_ID}"
 
 # ------------------------------------------------------------------
 # 2. Pull the Einstein Toolkit image from ECR
@@ -219,14 +255,14 @@ fi
 # one that finished uploading. Restore reads the marker, never the newest
 # timestamp, so a set that was still uploading when the instance was reclaimed
 # can never be recovered from.
-CURRENT_SLOT="$(aws s3 cp "$${S3_RUN}/checkpoints/CURRENT" - 2>/dev/null || true)"
+CURRENT_SLOT="$(aws s3 cp "$${S3_CKPT}/CURRENT" - 2>/dev/null || true)"
 if [ -n "$${CURRENT_SLOT}" ]; then
   echo "restoring checkpoints from $${CURRENT_SLOT}"
-  aws s3 sync "$${S3_RUN}/checkpoints/$${CURRENT_SLOT}/" "$${WORK_DIR}/checkpoints/" --only-show-errors
+  aws s3 sync "$${S3_CKPT}/$${CURRENT_SLOT}/" "$${WORK_DIR}/checkpoints/" --only-show-errors
 else
   echo "no CURRENT marker; starting from scratch"
 fi
-aws s3 sync "$${S3_RUN}/output/" "$${WORK_DIR}/simulations/" --only-show-errors
+aws s3 sync "$${S3_OUTPUT}/" "$${WORK_DIR}/simulations/$${RUN_NAME}/" --only-show-errors
 
 # Forget everything the restore just read, before anything allocates.
 #
@@ -336,7 +372,7 @@ set -euo pipefail
 export AWS_DEFAULT_REGION="$${AWS_REGION}"
 
 CKPT_DIR="$${WORK_DIR}/checkpoints"
-S3_CKPT="$${S3_RUN}/checkpoints"
+S3_CKPT="$${S3_CKPT}"
 KEEP=$${CHECKPOINT_GENERATIONS_KEPT}
 RANKS=$${MPI_PROCS}
 STAMP=/var/lib/gw230529/last-synced-checkpoint
@@ -376,11 +412,14 @@ write_stamp() {
 # The file sits inside the tree this script syncs, so it reaches S3 on the
 # next tick rather than this one, and it is additive across restarts for the
 # same reason cactus-stdout.log is: the restore pulls output/ back first.
+# It lives inside the run's own directory because that is where the sync is
+# rooted now -- at simulations/ level it would never be uploaded, and two
+# runs would interleave into one file.
 #
 # tee keeps the original stdout, so the final direct call still reports into
 # the bootstrap log exactly as before.
-TICK_LOG="$${WORK_DIR}/simulations/sync.log"
-mkdir -p "$${WORK_DIR}/simulations"
+TICK_LOG="$${WORK_DIR}/simulations/$${RUN_NAME}/sync.log"
+mkdir -p "$${WORK_DIR}/simulations/$${RUN_NAME}"
 exec > >(tee -a "\$${TICK_LOG}") 2>&1
 
 # Same stamp format as section 0, so these lines pass through that stamper
@@ -391,6 +430,20 @@ say() { printf '[%s] %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\$*"; }
 # measured from the start of the tick.
 say "tick start"
 trap 'say "tick end after \$${SECONDS}s"' EXIT
+
+# One sync at a time, however each was started (#15). systemd keeps the timer
+# from overlapping itself, but section 8 and the spot watcher call this
+# script directly, and on 2026-08-26 the final sync ran 13 seconds behind a
+# timer tick -- two processes pushing the same slot, each with a --delete
+# list the other could invalidate by pruning. Waiting rather than skipping,
+# because the direct callers are the pushes that must not be dropped: a tick
+# that queues behind the final sync finds nothing new and exits.
+exec 9>>/var/lock/gw230529-sync.lock
+if ! flock -n 9; then
+  say "waiting for the lock held by another sync"
+  flock 9
+  say "lock acquired after \$${SECONDS}s"
+fi
 
 # --stamp-only: record the restored set as already synced, and push nothing.
 #
@@ -411,11 +464,19 @@ if [ "\$${1:-}" = "--stamp-only" ]; then
 fi
 
 # Diagnostic output first: cheap, additive, and never blocks a restart.
+#
+# The sync is rooted at the run's own directory, not at simulations/. That is
+# what stops the run name appearing twice in every key (issue #5): the run
+# directory inside simulations/ is already named after the run, so mirroring
+# the parent would produce output/<run_name>/<run_name>/.
+#
 # CHECKPOINTS is excluded as a guard: it should be empty on the host because
 # the checkpoint bind mount shadows it, but if that mount is ever missing the
 # exclusion is what stops 78 GB being uploaded a second time under output/.
-aws s3 sync "$${WORK_DIR}/simulations/" "$${S3_RUN}/output/" \
-  --exclude '*/CHECKPOINTS/*' --only-show-errors
+# Both patterns, because the exclusion is relative to the sync root and the
+# directory sits directly under it.
+aws s3 sync "$${WORK_DIR}/simulations/$${RUN_NAME}/" "$${S3_OUTPUT}/" \
+  --exclude 'CHECKPOINTS/*' --exclude '*/CHECKPOINTS/*' --only-show-errors
 
 # The bootstrap's own log with it. Everything that happens before Cactus
 # starts -- the ECR pull, the two path rewrites, the uid handover -- is
@@ -423,8 +484,16 @@ aws s3 sync "$${WORK_DIR}/simulations/" "$${S3_RUN}/output/" \
 # tail, so on a node that has been up any length of time those lines are
 # already gone. Without this, a bootstrap that failed leaves nothing to read.
 #
+# The key carries the instance id (#9). A relaunch under the same run_name --
+# which is exactly how a spot interruption is resumed -- then lands beside
+# the previous node's log instead of replacing it, and a log fetched during
+# the minutes before this node's first push is absent rather than the
+# previous run's content wearing a current face. Newest by run:
+#   aws s3 ls <log_prefix> | sort | tail -1
+#
 # Never fatal: a missing log is not a reason to abandon a checkpoint push.
-aws s3 cp /var/log/gw230529-bootstrap.log "$${S3_RUN}/logs/bootstrap.log" \
+aws s3 cp /var/log/gw230529-bootstrap.log \
+  "$${S3_LOGS}/bootstrap-$${INSTANCE_ID}.log" \
   --only-show-errors || true
 
 # The unconditional part of every tick ends here. Everything after it is
@@ -563,7 +632,7 @@ jq -n \
   --arg mem "\$(free -g | awk '/^Mem:/ {print \$3"/"\$2" GiB"}')" \
   --arg disk "\$(df -h $${WORK_DIR} | awk 'NR==2 {print \$5}')" \
   '{timestamp: \$ts, instance_id: \$iid, memory: \$mem, disk_used: \$disk}' \
-  | aws s3 cp - "$${S3_RUN}/heartbeat/latest.json" --only-show-errors
+  | aws s3 cp - "$${S3_HEARTBEAT}/latest.json" --only-show-errors
 HB
 chmod +x /usr/local/bin/gw230529-heartbeat
 

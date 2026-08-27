@@ -19,7 +19,7 @@ ECR (ET イメージ配布)、およびコストガードレールを Terraform 
 | リージョン | **us-west-2 に確定 (2026-08-19 実測)** | 下記「リージョン選定の実測結果」 |
 | AZ | **us-west-2d (`usw2-az4`)**、次点 `us-west-2a` → `us-west-2c` | placement score 9 かつ c7a.48xlarge が最安 |
 | インスタンス | **c7a.48xlarge が既定 (2026-08-20 実測で確定)** | np=192 フル解像度のメモリ実測 136 GiB は 384 GiB の 35%。下記「Phase 5 メモリ実測」 |
-| 本番 run の長さ | **38.5 時間 / 115 USD (2026-08-21 実測)** | 4.16 sec/iter × 33,333 iteration。下記「Phase 5 スループット実測」 |
+| 本番 run の長さ | **33.7 時間 / 約 100 USD (終点 1750 M、2026-08-27 決定)** | 4.16 sec/iter (2026-08-21 実測) × 29,167 iteration。下記「本番 run の終点は 1750 M」 |
 | state backend | S3 + native lockfile (`use_lockfile`) | DynamoDB テーブルが不要になる |
 | S3 構成 | 1 バケット + prefix 別 lifecycle | バケット分割は分離を買わずポリシー面だけ増える |
 | ネットワーク | public subnet + IGW + S3 Gateway Endpoint | private + NAT は月 33 USD、予算の 11% |
@@ -113,6 +113,7 @@ c7a.48xlarge の 384 GiB を超えている**。
 **コスト見積り【2026-08-21 実測で確定】**: 下記「Phase 5 スループット実測」の
 とおり **4.16 sec/iter**。t=2000 M までは 33,333 iteration = **38.5 時間**、
 c7a.48xlarge spot で **115 USD**。
+【2026-08-27 更新】終点は 1750 M に決定したので本番は **33.7 h / 約 100 USD**。
 
 | | 実測 4.16 s/it → 2000 M | 1500 M で打ち切り | (旧) 悲観端 76 h |
 | --- | --- | --- | --- |
@@ -683,6 +684,75 @@ observer を検証したつもりが operator で通る**。検証は必ず素�
 **残骸として月 0.9 USD の Secrets Manager (ap-northeast-1) がある**が、
 **消してはいけないものが入っているので放置と決定 (2026-08-27)**。
 年 10 USD 相当は budget を食うが、上記の余裕に織り込み済み。
+
+
+### 本番 run の終点は 1750 M (2026-08-27 決定)
+
+gallery の 2000 M から短縮。**33.7 時間 / 約 100 USD** (4.16 sec/iter)。
+
+- 1500 M 案は「リングダウンの終了直後で終わる」ため却下 (Syota の判断)。
+  r=500 の抽出面に合体波が届くのが t≈1213 M で、余白がない
+- 2000 M は「ほとんど平坦な状態」— 残骸円盤の質量は merger + ~180 M で
+  平坦化する (dx=28 dry run と参照 run の両方で確認)
+- 1750 M = merger (t≈713 M) + ~1040 M。IMR 全体 + 初期円盤進化を収めて、
+  平坦な尻尾 4.8 h / 約 15 USD を落とす
+- 実装は `upload_inputs.sh` の 3 つ目の書き換え (`Cactus::cctk_final_time`)。
+  既存の fail-fast 検査に乗せた。`CCTK_FINAL_TIME` 環境変数で上書き可
+- `read_throughput.sh` の projection 既定も 1750 に変更
+
+### S3 レイアウト変更と本番前 hardening (2026-08-27)
+
+`fix/pre-production-hardening` ブランチで一括対応。
+
+**レイアウトはカテゴリ先頭に変更 (#17, #5 を close)**:
+`checkpoints/<run_name>/`, `output/<run_name>/`, `heartbeat/<run_name>/`,
+`logs/<run_name>/`。lifecycle ルールは先頭一致しかできないので、
+run_name 先頭の旧レイアウトでは**全ルールが何にもマッチしていなかった**
+(524.8 GB / 月 12 USD が無期限滞留)。output sync の起点を
+`simulations/<run_name>/` に絞ったので #5 の run_name 重複も同時に消えた。
+compute の出力は `run_prefix` から用途別 (`run_log_url` / `heartbeat_url` /
+`checkpoint_prefix` / `log_prefix`) に置き換え。
+**旧レイアウトの既存データは移行しない** — recovery probe の素材
+(throughput run の checkpoint) だけサーバサイドコピーで新レイアウトに移す。
+
+**併せて close したもの**:
+
+- **#9**: bootstrap ログをインスタンス id 付きキーに。同じ run_name の
+  再実行 (= spot 中断からの再開そのもの) が前の run のログを上書きしない。
+  versioning が意図的に off のバケットでは上書き = 即消失だった
+- **#13**: `Carpet::physical_time_per_hour` は**プロセス開始からの累積平均**。
+  10 分移動平均と誤読していた。cross-check は同一スパン (セグメント全体) の
+  比較に変更。8/26 の NUMA run で旧実装は 1.308「壁時計を疑え」、新実装は
+  1.000 (44.16 vs 44.2、issue の手計算と一致)
+- **#14**: `make ssm` がエラーを握り潰す件。terraform の stderr を通し、
+  セッション欠如と「インスタンス無し」を分離。heartbeat も同様
+- **#15**: sync の flock 直列化。タイマー tick と最終 sync / spot flush の
+  競合を封じた (待つ方式 — 直接呼び出しは落とせない push だから)
+- **#16**: observer に `DescribeLaunchTemplate{s,Versions}` +
+  `DescribeInstanceAttribute`。「何で起動したか」を state を読まずに監査できる
+- **#6**: operator に `ssm:SendCommand` (document / instance の 2 文に分割、
+  instance 側は Project タグ条件) + `cloudwatch:GetMetricStatistics` +
+  コマンド結果の read。simulator は 115 actions に増えた
+- **image_tag が digest を受けられなかった**のを修正 (`sha256:` なら `@` で
+  結合)。本番は digest pin が必須 — 中断→再起動で mutable tag が動くと
+  checkpoint を別ビルドに restore する
+
+**リファレンスとの突き合わせバリデーション (設計確定)**:
+
+- 参照 run `bhns_20252103` (同一 dx=19.2、t=3051 M まで) の stdout が
+  CarpetIOBasic info line を 4 iteration ごとに持ち、**うちの
+  cactus-stdout.log と完全に同一フォーマット**
+- 2026-08-27 実測: probe の重複 556 iteration で `rho_b` max と `H` max が
+  **表示 7 桁まで一致** (max reduction は結合順に依存しないため)。
+  `w_lorentz` は人工大気支配で中央値 1.2e-3
+- 恣意的な閾値は置かない — 「同時刻の参照との比」なら正常値は定義から 1。
+  3 層: NaNChecker の自動停止 (既存) / 比の変化の無人監視 (observer で
+  読めるので MFA 不要) / 停止判断は人間。**自動 abort は足さない** —
+  合体前後で「故障か物理か」の判別が変わり、固定ルールは必ず片側で誤る。
+  Syota は console 目視 + cron の aws cli でも課金を監視する
+- `make fetch-inputs ARGS=--reference` が参照ログを checksum pin で取得
+  (573 MB、sibling の tarball を upstream/ に置けばダウンロード省略)。
+  バリデータ自体は run 中に書く (クリティカルパスに乗せない)
 
 
 ## 言語設定

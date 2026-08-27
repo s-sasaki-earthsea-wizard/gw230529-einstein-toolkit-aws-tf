@@ -47,7 +47,7 @@ make check-permissions-policy    # simulate the document, attached to nothing
 make check-permissions PRINCIPAL=arn:aws:iam::<account-id>:user/<operator>
 ```
 
-Both must end in `OK: all 109 actions permitted`.
+Both must end in `OK: all 115 actions permitted`.
 
 ## Scoping
 
