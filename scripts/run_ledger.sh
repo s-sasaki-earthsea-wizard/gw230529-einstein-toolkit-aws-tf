@@ -42,12 +42,13 @@
 #   ended      the marker object, written by the spot watcher on an
 #              interruption notice and by section 8 on a clean exit
 #
-# A node with a bootstrap log and no marker is one of two things, told apart
-# by how fresh its last line is: "running" if it is still syncing, and
-# otherwise "vanished" -- it went away without even the two minute notice, a
-# hardware fault or a termination nobody announced. For both, the end is taken
-# as the last line that reached S3, which understates uptime by up to one sync
-# interval.
+# A node with a bootstrap log and no marker is one of two things, and the
+# bucket cannot tell them apart -- a node still running and a node that died a
+# minute ago both leave a fresh last line. EC2 is asked instead: "running" if
+# it says so, "vanished" otherwise, which covers both a node that went without
+# the two minute notice and one the API has already forgotten. For a node with
+# no marker the end is taken as the last line that reached S3, which
+# understates uptime by up to one sync interval.
 #
 # Usage:
 #   scripts/run_ledger.sh [options] [s3://bucket/logs/<run_name>/]
@@ -94,6 +95,12 @@ if [ -z "${PREFIX}" ]; then
 fi
 case "${PREFIX}" in */) ;; *) PREFIX="${PREFIX}/" ;; esac
 
+# Needed for the EC2 fallback below. The CLI would pick this up from the
+# environment when .env is loaded, but this script is meant to run standalone
+# under the observer profile too, and a missing region there would fail the
+# describe and be read as "the node is gone".
+REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-west-2}}"
+
 if [ -n "${KEEP}" ]; then
   DIR="${KEEP}"; mkdir -p "${DIR}"
 else
@@ -122,13 +129,39 @@ echo ""
 for f in "${DIR}"/bootstrap-*.log; do
   iid="$(basename "${f}" .log)"; iid="${iid#bootstrap-}"
   marker="${DIR}/ended-${iid}.json"
-  reason="vanished"; ended=""
+  reason=""; ended=""
   if [ -f "${marker}" ]; then
     reason="$(sed -nE 's/.*"reason":"([^"]*)".*/\1/p' "${marker}")"
     ended="$(sed -nE 's/.*"ended":"([^"]*)".*/\1/p' "${marker}")"
+  else
+    # No marker. A fresh last log line cannot tell "still running" from "died
+    # a minute ago" -- both look identical in the bucket, and guessing from
+    # freshness called a terminated node "running" on 2026-08-27. Ask EC2,
+    # which is authoritative while it still remembers the instance; a
+    # terminated instance ages out of the API in about an hour, and by then
+    # "not running" is the right answer anyway.
+    err=""
+    st="$(aws ec2 describe-instances --region "${REGION}" --instance-ids "${iid}" \
+           --query 'Reservations[].Instances[].State.Name' --output text 2>"${DIR}/.err" || true)"
+    err="$(cat "${DIR}/.err" 2>/dev/null || true)"
+    case "${st}" in
+      running|pending) reason="running" ;;
+      "")
+        # Not found means EC2 has forgotten it, which it does about an hour
+        # after termination -- that is a real answer. Any other failure
+        # (no region, no permission, throttling) is not, and must not be
+        # reported as though the node had been checked.
+        case "${err}" in
+          *InvalidInstanceID.NotFound*) reason="vanished" ;;
+          "")                           reason="vanished" ;;
+          *)                            reason="unchecked" ;;
+        esac
+        ;;
+      *) reason="vanished" ;;
+    esac
   fi
   printf '%s\t%s\t%s\t%s\n' "${iid}" "${reason}" "${ended}" "${f}"
-done | sort -t"$(printf '\t')" -k3 | awk -F'\t' -v now="$(date -u +%s)" '
+done | sort -t"$(printf '\t')" -k3 | awk -F'\t' '
 function isleap(y) { return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 }
 # ISO 8601 to epoch, without mktime -- a gawk extension the operator machine
 # may not have. Any trailing zone offset is dropped: the node runs UTC and the
@@ -180,11 +213,6 @@ function stamp_of(line) {
   # A marker is authoritative; without one the last line that reached S3 is
   # the best available, and it understates uptime by up to a sync interval.
   fin[iid] = (endstr != "") ? iso2epoch(endstr) : iso2epoch(last)
-  # No marker and the log is still fresh: the node has not stopped, it is
-  # mid-run. Without this the ledger calls a live node "vanished", which is
-  # the one reading that would send somebody looking for a fault. Two sync
-  # intervals of slack, since the log only reaches S3 on a tick.
-  if (!marked[iid] && now - fin[iid] < 900) reason[iid] = "running"
 
   evs[iid] = (ev_first != "") ? iso2epoch(ev_first) : 0
   eve[iid] = (ev_last  != "") ? iso2epoch(ev_last)  : 0
