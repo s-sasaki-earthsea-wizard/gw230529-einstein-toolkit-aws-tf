@@ -26,6 +26,7 @@
 #   make throughput AWS_PROFILE=gw230529-observer
 #   make heartbeat  AWS_PROFILE=gw230529-observer
 #   make validate-run AWS_PROFILE=gw230529-observer
+#   make ledger       AWS_PROFILE=gw230529-observer
 #
 # A command line variable is the reliable way to pass it, because the include
 # below would otherwise override the environment -- but see the unexport just
@@ -270,6 +271,10 @@ throughput: ## Read sec/iter and the cost projection out of a run log
 .PHONY: validate-run
 validate-run: ## Compare a live run against the published reference run
 	@scripts/validate_against_reference.sh $(ARGS)
+
+.PHONY: ledger
+ledger: ## Show every node that served a run: uptime, downtime, effective compute
+	@scripts/run_ledger.sh $(ARGS)
 
 .PHONY: heartbeat
 heartbeat: ## Print the latest heartbeat object written by the node

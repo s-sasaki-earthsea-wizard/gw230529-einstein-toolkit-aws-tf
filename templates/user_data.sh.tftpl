@@ -112,6 +112,12 @@ C_SIM_ROOT=/home/etuser/simulations
 C_RUN_PARENT="$${C_SIM_ROOT}/$${RUN_NAME}"
 C_RUN_DIR="$${C_RUN_PARENT}/run"
 C_CKPT_DIR="$${C_RUN_PARENT}/CHECKPOINTS"
+
+# The run log, on the host side of the simulations mount. Section 7 tees
+# Cactus into it and the end markers read its last info line, so that a
+# node's final iteration is recorded even when the node does not survive to
+# write anything else.
+CACTUS_LOG="$${WORK_DIR}/simulations/$${RUN_NAME}/run/cactus-stdout.log"
 C_INPUTS=/home/etuser/inputs
 
 # Absolute, because it is not on PATH. The image sets no ENV PATH beyond the
@@ -682,6 +688,24 @@ while true; do
     http://169.254.169.254/latest/meta-data/spot/instance-action)
   if [ "\$${CODE}" = "200" ]; then
     logger -t gw230529 "spot interruption notice received, flushing to S3"
+    # The end marker goes FIRST, before the flush.
+    #
+    # It is what turns logs/<run_name>/ into a ledger: every node leaves a
+    # bootstrap log whose first line is its start, and a clean finish leaves
+    # the "bootstrap finished" line in that same log. An interrupted node
+    # never reaches that line, so without this object the ledger has starts
+    # with no ends and downtime cannot be separated from compute time.
+    #
+    # Ordering matters more than tidiness here. The notice buys about two
+    # minutes; this is a few hundred bytes and lands in well under a second,
+    # while the flush below moves whatever the last tick did not. If the
+    # instance goes away mid-flush, the marker is already in the bucket.
+    #
+    # Never fatal: a failed marker must not cost the flush.
+    info=\$(grep -E '\| *[0-9]+\.[0-9]+ *\|' "$${CACTUS_LOG}" 2>/dev/null | tail -1 || true)
+    printf '{"instance_id":"%s","ended":"%s","reason":"spot-interruption","last_info_line":"%s"}' \
+      "$${INSTANCE_ID}" "\$(date -Is)" "\$(printf '%s' "\$${info}" | tr -d '\\"')" \
+      | aws s3 cp - "$${S3_LOGS}/ended-$${INSTANCE_ID}.json" --only-show-errors || true
     /usr/local/bin/gw230529-sync || true
     break
   fi
@@ -814,7 +838,7 @@ else
     mpirun.mpich -np "$${MPI_PROCS}" \
       "$${CACTUS_EXE}" -b line "$${C_INPUTS}/$${PARFILE}" 2>&1 \
     | stamp \
-    | tee -a "$${WORK_DIR}/simulations/$${RUN_NAME}/run/cactus-stdout.log" \
+    | tee -a "$${CACTUS_LOG}" \
     || RUN_STATUS=$?
 
   echo "simulation exited with status $${RUN_STATUS}"
@@ -845,6 +869,23 @@ if [ "$${RUN_MODE}" = "simulation" ]; then
 fi
 
 /usr/local/bin/gw230529-sync
+
+# The other half of the ledger. Same object name and shape as the one the
+# spot watcher writes, so logs/<run_name>/ended-*.json is a complete list of
+# how every node stopped -- and "started, no marker" is then a node that
+# vanished without even the two minute notice, which is a third outcome worth
+# being able to see.
+#
+# After the final sync, not before: this is the only marker whose write is not
+# racing a shutdown, so it costs nothing to place it where it can also report
+# the run status.
+printf '{"instance_id":"%s","ended":"%s","reason":"%s","status":%s,"last_info_line":"%s"}' \
+  "$${INSTANCE_ID}" "$(date -Is)" \
+  "$([ "$${RUN_STATUS}" -eq 0 ] && echo finished || echo failed)" \
+  "$${RUN_STATUS}" \
+  "$(grep -E '\| *[0-9]+\.[0-9]+ *\|' "$${CACTUS_LOG}" 2>/dev/null | tail -1 | tr -d '\\"' || true)" \
+  | aws s3 cp - "$${S3_LOGS}/ended-$${INSTANCE_ID}.json" --only-show-errors || true
+
 echo "=== gw230529 bootstrap finished at $(date -Is), status=$${RUN_STATUS} ==="
 
 if [ "$${AUTO_SHUTDOWN}" = "true" ]; then
