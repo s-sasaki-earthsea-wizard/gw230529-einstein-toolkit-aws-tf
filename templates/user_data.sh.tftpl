@@ -125,6 +125,18 @@ systemctl enable --now docker
 mkdir -p "$${WORK_DIR}"/{simulations,checkpoints,inputs,logs}
 mkdir -p "$${WORK_DIR}/simulations/$${RUN_NAME}/run"
 
+# The instance's own id, fetched once and baked into the sidecar below. It
+# keys the bootstrap log in S3: a rerun under the same run_name must land
+# beside its predecessor's log, not on top of it (#9). The bucket has
+# versioning off by design, so an overwrite there is unrecoverable -- the
+# 2026-08-21 throughput log, the primary evidence for the sec/iter figure,
+# was lost exactly this way.
+IMDS_TOKEN="$(curl -sX PUT http://169.254.169.254/latest/api/token \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 60")"
+INSTANCE_ID="$(curl -sH "X-aws-ec2-metadata-token: $${IMDS_TOKEN}" \
+  http://169.254.169.254/latest/meta-data/instance-id)"
+echo "instance id $${INSTANCE_ID}"
+
 # ------------------------------------------------------------------
 # 2. Pull the Einstein Toolkit image from ECR
 #
@@ -449,8 +461,16 @@ aws s3 sync "$${WORK_DIR}/simulations/$${RUN_NAME}/" "$${S3_OUTPUT}/" \
 # tail, so on a node that has been up any length of time those lines are
 # already gone. Without this, a bootstrap that failed leaves nothing to read.
 #
+# The key carries the instance id (#9). A relaunch under the same run_name --
+# which is exactly how a spot interruption is resumed -- then lands beside
+# the previous node's log instead of replacing it, and a log fetched during
+# the minutes before this node's first push is absent rather than the
+# previous run's content wearing a current face. Newest by run:
+#   aws s3 ls <log_prefix> | sort | tail -1
+#
 # Never fatal: a missing log is not a reason to abandon a checkpoint push.
-aws s3 cp /var/log/gw230529-bootstrap.log "$${S3_LOGS}/bootstrap.log" \
+aws s3 cp /var/log/gw230529-bootstrap.log \
+  "$${S3_LOGS}/bootstrap-$${INSTANCE_ID}.log" \
   --only-show-errors || true
 
 # The unconditional part of every tick ends here. Everything after it is
