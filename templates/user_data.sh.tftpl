@@ -422,6 +422,20 @@ say() { printf '[%s] %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\$*"; }
 say "tick start"
 trap 'say "tick end after \$${SECONDS}s"' EXIT
 
+# One sync at a time, however each was started (#15). systemd keeps the timer
+# from overlapping itself, but section 8 and the spot watcher call this
+# script directly, and on 2026-08-26 the final sync ran 13 seconds behind a
+# timer tick -- two processes pushing the same slot, each with a --delete
+# list the other could invalidate by pruning. Waiting rather than skipping,
+# because the direct callers are the pushes that must not be dropped: a tick
+# that queues behind the final sync finds nothing new and exits.
+exec 9>>/var/lock/gw230529-sync.lock
+if ! flock -n 9; then
+  say "waiting for the lock held by another sync"
+  flock 9
+  say "lock acquired after \$${SECONDS}s"
+fi
+
 # --stamp-only: record the restored set as already synced, and push nothing.
 #
 # The bootstrap calls this once, after a restore. Without it the first
