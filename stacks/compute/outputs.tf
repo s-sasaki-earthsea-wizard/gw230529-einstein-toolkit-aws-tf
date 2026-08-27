@@ -16,7 +16,26 @@ output "ssm_session_command" {
   value       = module.spot_node.ssm_session_command
 }
 
-output "run_prefix" {
-  description = "S3 prefix this run writes to."
-  value       = "s3://${local.foundation.data_bucket}/${var.run_name}/"
+# Purpose-built URLs rather than a single run prefix: the S3 layout puts the
+# category before the run name (see modules/storage), so one prefix no longer
+# covers everything a run writes.
+
+output "run_log_url" {
+  description = "S3 URL of the run's Cactus stdout log, the input to make throughput."
+  value       = "s3://${local.foundation.data_bucket}/output/${var.run_name}/run/cactus-stdout.log"
+}
+
+output "heartbeat_url" {
+  description = "S3 URL of the node's latest heartbeat object."
+  value       = "s3://${local.foundation.data_bucket}/heartbeat/${var.run_name}/latest.json"
+}
+
+output "checkpoint_prefix" {
+  description = "S3 prefix holding the run's checkpoint slots and CURRENT marker."
+  value       = "s3://${local.foundation.data_bucket}/checkpoints/${var.run_name}/"
+}
+
+output "log_prefix" {
+  description = "S3 prefix holding the node bootstrap logs for this run."
+  value       = "s3://${local.foundation.data_bucket}/logs/${var.run_name}/"
 }

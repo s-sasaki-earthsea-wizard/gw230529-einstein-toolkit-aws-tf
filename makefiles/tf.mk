@@ -255,7 +255,6 @@ throughput: ## Read sec/iter and the cost projection out of a run log
 
 .PHONY: heartbeat
 heartbeat: ## Print the latest heartbeat object written by the node
-	@bucket=$$($(TF) -chdir=stacks/foundation output -raw data_bucket) && \
-	run=$$($(TF) -chdir=stacks/compute output -raw run_prefix) && \
-	aws s3 cp $${run}heartbeat/latest.json - 2>/dev/null || \
-		echo "no heartbeat yet in $$bucket"
+	@url=$$($(TF) -chdir=stacks/compute output -raw heartbeat_url) && \
+	aws s3 cp $$url - 2>/dev/null || \
+		echo "no heartbeat yet at $$url"

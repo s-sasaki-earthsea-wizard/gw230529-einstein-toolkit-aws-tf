@@ -10,10 +10,20 @@
 #                 lifecycle rule. Upstream gallery artefacts that cannot be
 #                 redistributed, so they are neither committed nor baked into
 #                 the container image; the node fetches them from here at boot.
-#   checkpoints/  restart files in two alternating slots plus a CURRENT marker
-#   output/       diagnostic HDF5 / ASCII produced by the run
-#   artifacts/    final tar.gz deliverables, destined for Deep Archive
-#   heartbeat/    small status objects written by the monitoring cron
+#   checkpoints/<run_name>/   restart files in two alternating slots plus a
+#                             CURRENT marker
+#   output/<run_name>/        diagnostic HDF5 / ASCII produced by the run
+#   logs/<run_name>/          the node's bootstrap log
+#   artifacts/                final tar.gz deliverables, destined for
+#                             Deep Archive
+#   heartbeat/<run_name>/     small status objects written by the node
+#
+# The category comes first and the run name second. That ordering is load
+# bearing: an S3 lifecycle filter matches a prefix from the start of the key
+# and can match nothing else -- no suffix, no tag on a prefix. When the run
+# name came first, every rule below matched no key at all and 349 GB of dead
+# checkpoints accumulated with no expiry (issue #17, found 2026-08-26).
+# templates/user_data.sh.tftpl writes this layout; change the two together.
 #
 # Versioning is deliberately OFF. Phase 2 measured a 25 GB checkpoint at dx=28,
 # extrapolating to ~78 GB at production resolution; keeping noncurrent versions
@@ -91,6 +101,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "data" {
 
     filter {
       prefix = "output/"
+    }
+
+    expiration {
+      days = var.output_expiration_days
+    }
+  }
+
+  # Bootstrap logs are small (hundreds of KB) but they are the primary
+  # evidence for anything measured off a run -- the 2026-08-21 throughput
+  # figure was derived from one. They expire on the same clock as the output
+  # they document.
+  rule {
+    id     = "expire-logs"
+    status = "Enabled"
+
+    filter {
+      prefix = "logs/"
     }
 
     expiration {

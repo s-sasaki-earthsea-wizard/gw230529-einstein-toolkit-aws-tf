@@ -102,17 +102,14 @@ trap cleanup EXIT
 # ------------------------------------------------------------------
 if [ -z "${SOURCE}" ]; then
   cd "${REPO_ROOT}"
-  PREFIX="$(${TF} -chdir=stacks/compute output -raw run_prefix 2>/dev/null || true)"
-  if [ -z "${PREFIX}" ]; then
-    echo "no log given and stacks/compute has no run_prefix output." >&2
-    echo "Pass a path, or an s3:// URL." >&2
+  SOURCE="$(${TF} -chdir=stacks/compute output -raw run_log_url 2>/dev/null || true)"
+  if [ -z "${SOURCE}" ]; then
+    echo "no log given and the compute stack's run_log_url could not be read." >&2
+    echo "Is there a session? Try: eval \"\$(make login)\", or" >&2
+    echo "AWS_PROFILE=gw230529-observer in a shell with no operator session." >&2
+    echo "Or pass a path or an s3:// URL directly." >&2
     exit 1
   fi
-  # The run name appears twice in the path. That is issue #5, not a typo: the
-  # sync mirrors $WORK_DIR/simulations/ into <run>/output/ and the run
-  # directory inside it is already named after the run.
-  RUN_NAME="$(basename "${PREFIX%/}")"
-  SOURCE="${PREFIX}output/${RUN_NAME}/run/cactus-stdout.log"
 fi
 
 case "${SOURCE}" in
