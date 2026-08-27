@@ -58,7 +58,16 @@ echo "=== gw230529 bootstrap started at $(date -Is) ==="
 
 AWS_REGION="${aws_region}"
 RUN_MODE="${run_mode}"
-IMAGE="${ecr_repository_url}:${image_tag}"
+
+# A tag joins with ":", a digest with "@". Pinning by digest is what makes a
+# multi-day spot run deterministic: with a mutable tag, a node relaunched
+# after an interruption pulls whatever the tag points at *then*, which after
+# an image push mid-run would recover a checkpoint into a different build.
+IMAGE_REF="${image_tag}"
+case "$${IMAGE_REF}" in
+  sha256:*) IMAGE="${ecr_repository_url}@$${IMAGE_REF}" ;;
+  *)        IMAGE="${ecr_repository_url}:$${IMAGE_REF}" ;;
+esac
 BUCKET="${data_bucket}"
 INPUTS_PREFIX="${inputs_prefix}"
 RUN_NAME="${run_name}"

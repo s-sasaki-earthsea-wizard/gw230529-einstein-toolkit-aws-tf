@@ -225,7 +225,15 @@ variable "root_volume_iops" {
 }
 
 variable "image_tag" {
-  description = "ECR image tag to run. Pin production runs to a digest instead."
+  description = <<-EOT
+    ECR image reference to run: a tag, or a digest given as "sha256:...".
+    Pin production runs to the digest -- a node relaunched after a spot
+    interruption re-pulls this reference, and a mutable tag can have moved
+    under it mid-run. Read the digest with:
+      aws ecr describe-images --repository-name gw230529/einstein-toolkit \
+        --image-ids imageTag=latest \
+        --query 'imageDetails[0].imageDigest' --output text
+  EOT
   type        = string
   default     = "latest"
 }
