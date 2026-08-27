@@ -243,10 +243,21 @@ status: ## Show the current run's instance id and S3 prefix
 
 .PHONY: ssm
 ssm: ## Open a shell on the running node through SSM Session Manager
-	@cmd=$$($(TF) -chdir=stacks/compute output -raw ssm_session_command 2>/dev/null) && \
+# Two distinct failures, separated on purpose (#14). A terraform that cannot
+# read the state -- typically a shell with no operator session -- exits
+# non-zero with its own message left visible on stderr; only a terraform that
+# succeeds with an empty value means no instance. The previous version
+# discarded stderr and short-circuited past its own explanation, so both
+# arrived as a bare "Error 1" -- at the one moment this target is wanted,
+# while an instance is billing.
+	@cmd=$$($(TF) -chdir=stacks/compute output -raw ssm_session_command) || \
+		{ echo ""; \
+		  echo "could not read the compute stack (terraform message above)."; \
+		  echo "No session in this shell? Try: eval \"\$$(make login)\""; \
+		  exit 1; }; \
 	if [ -z "$$cmd" ] || [ "$$cmd" = "null" ]; then \
 		echo "no instance is running -- make run first"; exit 1; \
-	fi && \
+	fi; \
 	echo "$$cmd" && exec $$cmd
 
 .PHONY: throughput
@@ -255,6 +266,11 @@ throughput: ## Read sec/iter and the cost projection out of a run log
 
 .PHONY: heartbeat
 heartbeat: ## Print the latest heartbeat object written by the node
-	@url=$$($(TF) -chdir=stacks/compute output -raw heartbeat_url) && \
+# Same two-failure separation as make ssm above (#14).
+	@url=$$($(TF) -chdir=stacks/compute output -raw heartbeat_url) || \
+		{ echo ""; \
+		  echo "could not read the compute stack (terraform message above)."; \
+		  echo "No session in this shell? Try: eval \"\$$(make login)\""; \
+		  exit 1; }; \
 	aws s3 cp $$url - 2>/dev/null || \
 		echo "no heartbeat yet at $$url"
