@@ -854,6 +854,41 @@ probe 実測は 58.2% だが、これは 30 分しか生きないノードの値
 **中断そのものより頻度が効く**: 4 時間で 95%、無中断 33.7 時間なら 99.4%。
 
 
+### ポスプロはローカル Docker で行う (2026-08-29 決定)
+
+OpenCAE 講演用の図と動画。**Lambda 案は実測で棄却した** — 前提だった
+「クラウドでないと動かせない量のデータ」が成立しない:
+
+- 本番 run の全出力は **9.7 GB / 1,865 ファイル**。図の材料は ~300 MB
+  (mp_psi4.h5 3 MB、rho.xy.h5 89 MB、BH_diagnostics 1.6 MB、
+  volume_integrals 43 KB、スカラー .asc 群)
+- 数回しか呼ばないタスクに ECR push + Lambda + IAM + invoke 導線を作るのは
+  開発コストが一桁重い。ゼロ待機コストはローカル実行でも同じ
+- 実装は `postprocessing/` (Dockerfile + kuibit スクリプト 3 本) と
+  `makefiles/post.mk` (`fetch-results` / `postproc-image` / `figures` /
+  `movie` / `pack-results`)。イメージは依存のみ (kuibit 1.5.1 / matplotlib
+  3.10.5 / h5py 3.14.0 を pin)、スクリプトは bind mount で編集にリビルド不要
+- **VisIt は使わない**。ギャラリーの動画スクリプトは VisIt だが、29 フレームの
+  2D データに GUI 志向の巨大インストールは釣り合わない。kuibit の
+  read_on_grid で 8 レベルを 800² に合成して matplotlib で描く
+
+**データ側の確定事項** (2026-08-29 実測):
+
+- **ψ4 は mp_psi4.h5 を使うこと**。ASCII の multipole 出力は同じ 15.36 M
+  サンプリングしか持たず、参照 run の密な .asc と混同しやすい (一度誤読した)。
+  127 点・dt=15.36 M で合体まで 7〜17 サンプル/周期 — チャープ図は成立、
+  リングダウン末尾は角張る。ピークは **t=1213.44 M** で既知値と一致
+- **2D は 29 フレームが上限** (out2D_every=1024 = 61.44 M ごと)。
+  合体を密に吐き直す checkpoint は keep=2 で疾うに消えている。
+  動画は 3 fps コマ送り、講演には 3 枚パネル (t=0 / 737 / 1720) が主力
+- **recovery の巻き戻しで .asc に重複 iteration がありうる**。
+  ギャラリー join.sh の gawk と同じ問題。common.py の dedup_sorted が処理
+- **`output/` は 90 日で expire する** (11 月末 = 講演直前)。
+  `make fetch-results` は作図の入力取得であると同時にデータ保全。
+  図の確定後は `make pack-results` で tar.gz 1 個に畳んで生ツリーを消す
+  (NAS がオブジェクト単位で Deep Archive にバックアップされるため、
+  ファイル数を減らすこと自体が目的)
+
 ## 言語設定
 
 このプロジェクトでは**日本語**での応答を行う。ただし以下は**英語必須**。

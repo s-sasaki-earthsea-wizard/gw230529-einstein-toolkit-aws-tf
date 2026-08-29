@@ -57,8 +57,16 @@ def render(ax, rho, it, grid, horizons, vmin, vmax):
     data = rho.read_on_grid(it, grid)
     t = rho.time_at_iteration(it)
     x, y = data.coordinates_from_grid()
+    # rasterized keeps the PDF panel small: the 800^2 mesh embeds as an
+    # image while axes and labels stay vector. Without it the panel PDF
+    # carries three full vector meshes and lands north of 30 MB.
     im = ax.pcolormesh(
-        x, y, np.clip(data.data.T, vmin, None), cmap="inferno", norm=LogNorm(vmin=vmin, vmax=vmax)
+        x,
+        y,
+        np.clip(data.data.T, vmin, None),
+        cmap="inferno",
+        norm=LogNorm(vmin=vmin, vmax=vmax),
+        rasterized=True,
     )
     draw_horizons(ax, horizons, t)
     ax.set_aspect("equal")

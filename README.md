@@ -110,9 +110,16 @@ modules/
   spot_node/    Launch template, spot instance, interruption alerting
 templates/
   user_data.sh.tftpl   Node bootstrap: pull image, restore state, sync, self-terminate
+postprocessing/
+  Dockerfile           Pinned render environment: kuibit, matplotlib, ffmpeg
+  plot_psi4.py         Psi4 (2,2) waveform at the outermost extraction radius
+  plot_timeseries.py   Max density, horizon masses, rest mass on the grid
+  render_frames.py     Density frames on the orbital plane, movie, 3-panel snapshot
 scripts/
   fetch_inputs.sh      Download the gallery artefacts, checksum pinned
   upload_inputs.sh     Derive the cloud parfile, check it, upload it
+  fetch_results.sh     Sync a finished run's output/ prefix into results/
+  pack_results.sh      Compress a results tree to tar.gz, verify, delete the tree
   region_scout.sh      Compare regions on spot score, price and vCPU quota
   check_permissions.sh Simulate every IAM action the stacks need, creating nothing
   check_secrets.sh     Fail if a tracked file carries an account id or ARN
@@ -305,6 +312,42 @@ with the alternative that was rejected — pointing the operator profile at a
 `credential_process` that generates the TOTP code from a stored seed, which
 satisfies `aws:MultiFactorAuthPresent` while putting both factors on one disk
 under one uid.
+
+## Post-processing
+
+Figures and the movie for a finished run are rendered **locally**, from a
+synced copy of the S3 output, inside a pinned Docker image. The cloud is not
+involved beyond one read-only download: the entire production run wrote
+~10 GB and the figures read ~300 MB of it, which is a download, not a reason
+to ship a rendering environment into Lambda or a fresh EC2 node. The scripts
+follow the upstream gallery's post-processing set, with one substitution —
+kuibit renders the density frames instead of VisIt, which the gallery itself
+already uses for the Ψ4 plot.
+
+```bash
+make fetch-results AWS_PROFILE=gw230529-observer   # sync output/ -> results/
+make postproc-image                                # build the render image
+make figures                                       # Psi4, rho_max, AH masses, rest mass
+make movie                                         # 29 frames -> mp4 + 3-panel snapshot
+```
+
+Outputs land in `postprocessing/out/<run_name>/`; commit the chosen ones to
+the talk repository, not here.
+
+Two properties of the data are worth knowing before judging the figures:
+
+- **The movie has 29 frames.** `IO::out2D_every = 1024` means one 2D slice
+  per 61.44 M, and the checkpoints that could replay the merger with a finer
+  cadence were pruned by the two-generation retention long ago. The 3-panel
+  snapshot exists because three stills often serve a slide better than a
+  3 fps animation.
+- **`output/` expires 90 days after the run** (see modules/storage), which
+  for the production run lands weeks before the talk that needs the data.
+  `make fetch-results` is therefore also the preservation step. Once the
+  figures are approved, `make pack-results` compresses the ~1,900-file tree
+  into one tar.gz and deletes the tree — the NAS behind it is backed up
+  object-by-object, so fewer objects is the point — after verifying the
+  archive's file count and asking first.
 
 ## Cost model
 
