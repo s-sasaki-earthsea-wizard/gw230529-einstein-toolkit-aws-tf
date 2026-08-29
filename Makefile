@@ -8,6 +8,7 @@
 .DEFAULT_GOAL := help
 
 include makefiles/tf.mk
+include makefiles/post.mk
 
 .PHONY: help
 help: ## Show this help
