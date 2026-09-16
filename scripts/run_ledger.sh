@@ -57,11 +57,15 @@
 #
 # Options:
 #   --keep DIR   keep the downloaded logs in DIR instead of a temp directory
+#   --tsv        emit the ledger as tab-separated rows instead of the table,
+#                for a plot or a spreadsheet to read. Progress goes to stderr,
+#                so a redirect captures rows and nothing else.
 #
 # Examples:
 #   scripts/run_ledger.sh
 #   AWS_PROFILE=gw230529-observer scripts/run_ledger.sh
 #   scripts/run_ledger.sh s3://gw230529-data-earthsea/logs/prod-dx19p2-1750m/
+#   scripts/run_ledger.sh --tsv > ledger.tsv
 
 set -euo pipefail
 
@@ -71,10 +75,12 @@ TF="${TF:-terraform}"
 
 KEEP=""
 PREFIX=""
+TSV=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep)    KEEP="$2"; shift 2 ;;
+    --tsv)     TSV=1; shift ;;
     -h|--help) sed -n '/^# Usage:/,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)        echo "unknown option: $1" >&2; exit 2 ;;
     *)         PREFIX="$1"; shift ;;
@@ -101,6 +107,10 @@ case "${PREFIX}" in */) ;; *) PREFIX="${PREFIX}/" ;; esac
 # describe and be read as "the node is gone".
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-west-2}}"
 
+# Under --tsv the table is data, so everything that is not a row belongs on
+# stderr; a redirect then captures the ledger alone.
+info() { if [ "${TSV}" = "1" ]; then echo "$@" >&2; else echo "$@"; fi; }
+
 if [ -n "${KEEP}" ]; then
   DIR="${KEEP}"; mkdir -p "${DIR}"
 else
@@ -108,7 +118,7 @@ else
   trap 'rm -rf "${DIR}"' EXIT
 fi
 
-echo "run logs       ${PREFIX}"
+info "run logs       ${PREFIX}"
 if ! aws s3 cp "${PREFIX}" "${DIR}/" --recursive --only-show-errors; then
   echo "could not read ${PREFIX}" >&2
   exit 1
@@ -116,13 +126,13 @@ fi
 
 n_logs="$(find "${DIR}" -name 'bootstrap-*.log' | wc -l)"
 if [ "${n_logs}" -eq 0 ]; then
-  echo ""
-  echo "no per-instance bootstrap logs there."
-  echo "Runs before 2026-08-27 wrote a single bootstrap.log that each node"
-  echo "overwrote, so their history cannot be reconstructed (issue #9)."
+  info ""
+  info "no per-instance bootstrap logs there."
+  info "Runs before 2026-08-27 wrote a single bootstrap.log that each node"
+  info "overwrote, so their history cannot be reconstructed (issue #9)."
   exit 3
 fi
-echo ""
+info ""
 
 # Each bootstrap log yields three timestamps and an iteration range; each
 # marker yields an end and a reason. awk joins them on the instance id.
@@ -161,7 +171,7 @@ for f in "${DIR}"/bootstrap-*.log; do
     esac
   fi
   printf '%s\t%s\t%s\t%s\n' "${iid}" "${reason}" "${ended}" "${f}"
-done | sort -t"$(printf '\t')" -k3 | awk -F'\t' '
+done | sort -t"$(printf '\t')" -k3 | awk -F'\t' -v tsv="${TSV}" '
 function isleap(y) { return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 }
 # ISO 8601 to epoch, without mktime -- a gawk extension the operator machine
 # may not have. Any trailing zone offset is dropped: the node runs UTC and the
@@ -192,11 +202,20 @@ function stamp_of(line) {
   marked[iid] = (endstr != "")
 
   first = ""; last = ""; ev_first = ""; ev_last = ""; it_first = ""; it_last = ""
+  memg = ""
   while ((getline line < f) > 0) {
     s = stamp_of(line)
     if (s == "") continue
     if (first == "") first = s
     last = s
+    # Nothing in the log states the instance type. The line the NUMA fix
+    # prints after the restore reports usable memory instead, and that
+    # separates a 384 GiB machine from a 768 GiB one without ambiguity --
+    # worth keeping, because a run that switched families mid-flight cannot
+    # be read from EC2 afterwards: the instances are gone.
+    if (memg == "" && match(line, /[0-9]+ GiB available/)) {
+      memg = substr(line, RSTART, RLENGTH); sub(/ GiB available/, "", memg)
+    }
     body = substr(line, 24)
     # A CarpetIOBasic info line: "<it> <time> | ..." with a numeric head.
     if (index(body, "|") == 0) continue
@@ -218,11 +237,19 @@ function stamp_of(line) {
   eve[iid] = (ev_last  != "") ? iso2epoch(ev_last)  : 0
   itf[iid] = it_first; itl[iid] = it_last
   fdisp[iid] = first
+  mem[iid] = memg
 }
 
 END {
-  printf "%-21s %-20s %-20s %-17s %-14s %s\n", \
-    "instance", "started (UTC)", "ended (UTC)", "reason", "iterations", "evolution"
+  # One pass, two shapes. The table is for reading; --tsv is for a plot or a
+  # spreadsheet. The per-node numbers and the totals are computed once and
+  # then printed in whichever shape was asked for, so a chart drawn from the
+  # rows and the table a human read can never disagree about this run.
+  if (tsv == "1")
+    print "#instance\treason\tstarted\tended\tevolution_started\tevolution_ended\titeration_first\titeration_last\tuptime_s\tevolution_s\tmemory_gib"
+  else
+    printf "%-21s %-20s %-20s %-17s %-14s %s\n", \
+      "instance", "started (UTC)", "ended (UTC)", "reason", "iterations", "evolution"
   span_lo = 0; span_hi = 0; up = 0; ev = 0
   for (i = 1; i <= n; i++) {
     iid = order[i]
@@ -232,13 +259,29 @@ END {
     up += u; ev += e
     if (span_lo == 0 || start[iid] < span_lo) span_lo = start[iid]
     if (fin[iid] > span_hi) span_hi = fin[iid]
-    printf "%-21s %-20s %-20s %-17s %-14s %s\n", \
-      iid, fdisp[iid], strftime_iso(fin[iid]), reason[iid], \
-      (itf[iid] == "" ? "none" : itf[iid] ".." itl[iid]), hms(e)
+    if (tsv == "1")
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\n", \
+        iid, reason[iid], fdisp[iid], strftime_iso(fin[iid]), \
+        strftime_iso(evs[iid]), strftime_iso(eve[iid]), \
+        (itf[iid] == "" ? "-" : itf[iid]), (itl[iid] == "" ? "-" : itl[iid]), \
+        u, e, (mem[iid] == "" ? "-" : mem[iid])
+    else
+      printf "%-21s %-20s %-20s %-17s %-14s %s\n", \
+        iid, fdisp[iid], strftime_iso(fin[iid]), reason[iid], \
+        (itf[iid] == "" ? "none" : itf[iid] ".." itl[iid]), hms(e)
   }
 
   span = span_hi - span_lo
   down = span - up
+  if (tsv == "1") {
+    # Totals as a trailer rather than a separate mode: a consumer that
+    # recomputes them from the rows can check its own arithmetic against
+    # these, which is the check that catches a plot with a mangled row.
+    printf "#totals\tnodes=%d\tspan_s=%d\tuptime_s=%d\tevolution_s=%d\n", \
+      n, span, up, ev
+    if (live) print "#note\ta node is still running; these totals are a snapshot"
+    exit
+  }
   print ""
   printf "  wall clock span    %-10s  first node started to last node ended\n", hms(span)
   printf "  node uptime        %-10s  %5.1f%% of span    (downtime %s)\n", \
