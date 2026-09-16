@@ -44,3 +44,8 @@ output "fis_experiment_template_id" {
   description = "FIS experiment template that interrupts the node, null unless fis_enabled."
   value       = one(aws_fis_experiment_template.spot_interruption[*].id)
 }
+
+output "available_zones" {
+  description = "Zones the foundation stack put a subnet in; the set a launch ladder may name."
+  value       = sort(keys(local.foundation.public_subnet_ids_by_az))
+}

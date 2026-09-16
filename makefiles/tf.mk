@@ -233,7 +233,11 @@ run: ## Launch the spot instance and start a run
 		echo ""; \
 	fi
 	@echo "This starts billing. The node self-terminates when the run ends."
-	@$(TF) -chdir=stacks/compute apply -input=false -var run_enabled=true
+# Through the ladder, so a dry pool moves to the next (zone, instance type)
+# pair instead of blocking on one until a human notices (#22). With no
+# LAUNCH_LADDER in .env it is a single apply with the tfvars settings, which
+# is what this line used to be.
+	@scripts/launch_with_ladder.sh
 
 .PHONY: stop
 stop: ## Terminate the spot instance, keeping the launch template
