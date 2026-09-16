@@ -47,7 +47,7 @@ make check-permissions-policy    # simulate the document, attached to nothing
 make check-permissions PRINCIPAL=arn:aws:iam::<account-id>:user/<operator>
 ```
 
-Both must end in `OK: all 115 actions permitted`.
+Both must end in `OK: all 129 actions permitted`.
 
 ## Scoping
 
@@ -64,7 +64,7 @@ resource-level permissions:
 | Budgets | `budget/gw230529-*` |
 | SSM parameters | only `/aws/service/ami-amazon-latest/*`, the public AMI index |
 
-Four things cannot be scoped, and are granted on `*` deliberately:
+Five things cannot be scoped, and are granted on `*` deliberately:
 
 - **EC2.** Its ARNs carry no project name, so no prefix pattern can separate
   this project's VPC from any other. A pattern like
@@ -73,6 +73,12 @@ Four things cannot be scoped, and are granted on `*` deliberately:
 - **Cost Explorer.** `ce:*` has no resource-level permissions at all.
 - **Session Manager.** `ssm:StartSession` targets an instance ARN, which
   brings back the EC2 problem.
+- **Fault Injection Service.** A FIS ARN carries a generated id and no
+  project name, so there is no prefix to fence with -- the same shape as EC2.
+  The boundary is somewhere better: an experiment can only do what the role it
+  runs as can do, `iam:PassRole` is restricted to `role/gw230529-*`, and the
+  only FIS-capable member of that set may do exactly one thing, to exactly one
+  kind of target. See the section below.
 - **`ec2:GetSpotPlacementScores`, `servicequotas:*`, `ecr:GetAuthorizationToken`,
   `s3:ListAllMyBuckets`.** Account-wide queries with no resource to scope to.
 
@@ -102,6 +108,33 @@ The trade: a resource that somehow ends up untagged becomes undeletable
 through this principal, and `terraform destroy` will stop on it. That is the
 guard working, not a bug — retag the resource or delete it with another
 principal.
+
+## The FIS experiment role
+
+Granting `fis:` on `*` would be alarming if FIS could do anything by itself.
+It cannot: every action an experiment performs is performed by an IAM role the
+experiment template names, and creating an experiment template requires
+`iam:PassRole` on that role. This policy allows `iam:PassRole` only for
+`role/gw230529-*`.
+
+`stacks/compute` creates one such role, behind `fis_enabled`, and it carries a
+single permission:
+
+```
+ec2:SendSpotInstanceInterruptions  on  instance/*
+  Condition: aws:ResourceTag/Project = gw230529
+ec2:DescribeInstances              on  *
+```
+
+So the worst an operator can do through FIS is send a spot interruption notice
+to an instance this project tagged -- which is the thing spot does to those
+instances anyway, several times a night, and which the node is built to
+survive. The trust policy names `fis.amazonaws.com` with `aws:SourceAccount`,
+so another account cannot borrow it.
+
+`fis:` is granted as a named list rather than `fis:*` for one reason worth
+stating: it leaves out the multi-account and target-account-configuration
+actions, which are the ones whose blast radius leaves this account.
 
 ## What this policy does not grant
 

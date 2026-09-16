@@ -180,6 +180,27 @@
       "Resource": "*"
     },
     {
+      "Sid": "FisSpotInterruptionExperiments",
+      "Effect": "Allow",
+      "Action": [
+        "fis:CreateExperimentTemplate",
+        "fis:GetExperimentTemplate",
+        "fis:UpdateExperimentTemplate",
+        "fis:DeleteExperimentTemplate",
+        "fis:ListExperimentTemplates",
+        "fis:StartExperiment",
+        "fis:StopExperiment",
+        "fis:GetExperiment",
+        "fis:ListExperiments",
+        "fis:ListActions",
+        "fis:GetAction",
+        "fis:TagResource",
+        "fis:UntagResource",
+        "fis:ListTagsForResource"
+      ],
+      "Resource": "*"
+    },
+    {
       "Sid": "ReadOnlyActionsWithNoResourceScope",
       "Effect": "Allow",
       "Action": [
