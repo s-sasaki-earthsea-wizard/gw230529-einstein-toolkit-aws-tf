@@ -334,3 +334,24 @@ variable "auto_shutdown" {
   type        = bool
   default     = true
 }
+
+variable "fis_enabled" {
+  description = <<-EOT
+    Whether the Fault Injection Service role and experiment template exist.
+
+    They are what makes a spot interruption something that can be aimed at a
+    moment rather than waited for, which is the whole of issue #24: the
+    handler's behaviour when a notice lands during a sync push, or during a
+    checkpoint write, has been reasoned about in comments and never observed.
+
+    Off by default. A production run should not carry a way to interrupt
+    itself, and the two resources cost nothing to leave behind once a series
+    of experiments is done -- so turning this on is a deliberate edit rather
+    than a default anyone inherits.
+
+    Firing one costs 0.10 USD per action-minute with a two minute minimum,
+    plus whatever the node itself bills.
+  EOT
+  type        = bool
+  default     = false
+}

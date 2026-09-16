@@ -39,3 +39,8 @@ output "log_prefix" {
   description = "S3 prefix holding the node bootstrap logs for this run."
   value       = "s3://${local.foundation.data_bucket}/logs/${var.run_name}/"
 }
+
+output "fis_experiment_template_id" {
+  description = "FIS experiment template that interrupts the node, null unless fis_enabled."
+  value       = one(aws_fis_experiment_template.spot_interruption[*].id)
+}
