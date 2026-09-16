@@ -73,3 +73,11 @@ postprocessing/out/
 # clone's loop on its first iteration.
 .relaunch-stop
 .relaunch-state
+
+# ============================================================
+# Spot placement score samples (scripts/sample_placement_scores.sh)
+# ============================================================
+# An hourly cron appends here. The series is the point -- AWS publishes no
+# history for placement scores -- so it accumulates locally and a chosen
+# snapshot gets committed under data/ when there is enough to plot.
+.spot-samples/

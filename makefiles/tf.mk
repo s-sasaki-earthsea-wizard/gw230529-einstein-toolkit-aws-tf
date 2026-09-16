@@ -109,6 +109,10 @@ setup: ## Create .env, backend.hcl and terraform.tfvars from the templates
 region-scout: ## Compare candidate regions on spot score, price and quota
 	@scripts/region_scout.sh
 
+.PHONY: sample-scores
+sample-scores: ## Append one spot placement score sample (hourly from cron; issue #22)
+	@scripts/sample_placement_scores.sh
+
 .PHONY: check-permissions
 check-permissions: ## Simulate every IAM action against a live principal (PRINCIPAL=<arn>)
 	@scripts/check_permissions.sh $(PRINCIPAL)
