@@ -329,6 +329,7 @@ make fetch-results AWS_PROFILE=gw230529-observer   # sync output/ -> results/
 make postproc-image                                # build the render image
 make figures                                       # Psi4, rho_max, AH masses, rest mass
 make movie                                         # 29 frames -> mp4 + 3-panel snapshot
+make ledger-chart AWS_PROFILE=gw230529-observer    # node timeline, from the run's logs
 ```
 
 Outputs land in `postprocessing/out/<run_name>/`; commit the chosen ones to
@@ -341,6 +342,18 @@ Two properties of the data are worth knowing before judging the figures:
   cadence were pruned by the two-generation retention long ago. The 3-panel
   snapshot exists because three stills often serve a slide better than a
   3 fps animation.
+- **The node timeline comes from the logs, not the output.** `make
+  ledger-chart` re-runs `scripts/run_ledger.sh --tsv` over
+  `logs/<run_name>/` and draws one band per node, so it still works after
+  `make pack-results` has taken `results/` away. Colour is the outcome, and
+  the distinction it draws is not interrupted-versus-finished but whether the
+  work survived: a node reclaimed before it banked a checkpoint had its
+  iterations recomputed by the next one. The x axis carries the region's
+  local time because the interruptions cluster against US Pacific working
+  hours — read that alongside the confound, which the row labels carry: this
+  run changed instance family at the same time of day it changed time of day.
+  The script measures every band it draws back against the ledger row it came
+  from, and refuses to write a figure that disagrees with the numbers.
 - **`output/` expires 90 days after the run** (see modules/storage), which
   for the production run lands weeks before the talk that needs the data.
   `make fetch-results` is therefore also the preservation step. Once the

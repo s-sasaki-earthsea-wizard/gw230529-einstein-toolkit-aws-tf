@@ -10,6 +10,7 @@
 #   make postproc-image
 #   make figures
 #   make movie
+#   make ledger-chart AWS_PROFILE=gw230529-observer
 #   make pack-results        # when the figures are done and approved
 #
 # Local rather than cloud on purpose. The whole run wrote ~10 GB and the
@@ -37,15 +38,29 @@ docker run --rm -u $$(id -u):$$(id -g) \
 	-w /app $(POSTPROC_IMAGE)
 endef
 
-.PHONY: postproc-preflight
-postproc-preflight:
+# The same, without the run tree. The node timeline is drawn from the ledger
+# rather than from the simulation output, so it keeps working after
+# make pack-results has compressed results/ away.
+define POSTPROC_RUN_OUT
+docker run --rm -u $$(id -u):$$(id -g) \
+	-e MPLCONFIGDIR=/tmp -e XDG_CACHE_HOME=/tmp \
+	-v $(abspath postprocessing):/app:ro \
+	-v $(abspath postprocessing/out/$(RUN_NAME)):/out \
+	-w /app $(POSTPROC_IMAGE)
+endef
+
+.PHONY: ledger-preflight
+ledger-preflight:
 	@test -n "$(RUN_NAME)" || \
 		{ echo "no run under $(RESULTS_ROOT)/ -- run make fetch-results first, or set RUN_NAME="; exit 1; }
-	@test -d "$(RESULTS_ROOT)/$(RUN_NAME)/run" || \
-		{ echo "$(RESULTS_ROOT)/$(RUN_NAME)/run is missing -- is the fetch complete?"; exit 1; }
 	@docker image inspect $(POSTPROC_IMAGE) >/dev/null 2>&1 || \
 		{ echo "image $(POSTPROC_IMAGE) not found -- run make postproc-image"; exit 1; }
 	@mkdir -p postprocessing/out/$(RUN_NAME)
+
+.PHONY: postproc-preflight
+postproc-preflight: ledger-preflight
+	@test -d "$(RESULTS_ROOT)/$(RUN_NAME)/run" || \
+		{ echo "$(RESULTS_ROOT)/$(RUN_NAME)/run is missing -- is the fetch complete?"; exit 1; }
 
 ##@ Post-processing
 
@@ -65,6 +80,11 @@ figures: postproc-preflight ## Render the Psi4 waveform and the time-series figu
 .PHONY: movie
 movie: postproc-preflight ## Render the density frames, movie and 3-panel snapshot (ARGS=--help)
 	@$(POSTPROC_RUN) python render_frames.py $(ARGS)
+
+.PHONY: ledger-chart
+ledger-chart: ledger-preflight ## Draw the node timeline from the S3 ledger (observer profile works)
+	@scripts/run_ledger.sh --tsv $(ARGS) > postprocessing/out/$(RUN_NAME)/ledger.tsv
+	@$(POSTPROC_RUN_OUT) python plot_ledger.py
 
 .PHONY: pack-results
 pack-results: ## Compress a fetched results tree to tar.gz and delete the tree (asks first)
