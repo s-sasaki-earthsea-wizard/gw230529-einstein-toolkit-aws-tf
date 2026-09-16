@@ -47,10 +47,15 @@ PACIFIC_LABEL = "PDT"
 # conventional definition rather than one fitted to this run's interruptions.
 BUSINESS_HOURS = (8, 17)
 
-# Nothing in the bootstrap log records the instance type. The line printed
-# after the restore reports usable memory, which the ledger carries through,
-# and the two families this run used are 384 and 768 GiB -- far enough apart
-# that one threshold is unambiguous rather than a guess.
+# How a node's family is decided, in order of preference.
+#
+# Since 2026-09-16 the bootstrap reads the instance type from IMDS and prints
+# it, so a ledger drawn from a run after that date states the family rather
+# than inferring it. The 2026-08 run predates the line, and its logs are the
+# ones this chart was written for, so the inference stays: usable memory is
+# what the NUMA fix happens to print after a restore, and 384 GiB against 768
+# separates the two families that run used far enough apart that a single
+# threshold is unambiguous rather than a guess.
 FAMILY_BY_MEMORY = ((500, "c7a"), (10**9, "m7a"))
 
 GREY = "#6E6E78"
@@ -78,11 +83,17 @@ class Node:
         self.uptime_s = int(row["uptime_s"])
         self.evolution_s = int(row["evolution_s"])
         self.memory_gib = _int(row["memory_gib"])
+        # Absent from ledgers written before 2026-09-16; read by name and
+        # defaulted, so an old TSV and a new one both parse.
+        self.instance_type = row.get("instance_type", "-")
+        self.availability_zone = row.get("availability_zone", "-")
         self.banked = False
         self.after_the_run = False
 
     @property
     def family(self):
+        if self.instance_type not in ("-", "", None):
+            return self.instance_type.split(".")[0]
         if self.memory_gib is None:
             return "?"
         for limit, name in FAMILY_BY_MEMORY:

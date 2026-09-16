@@ -202,17 +202,26 @@ function stamp_of(line) {
   marked[iid] = (endstr != "")
 
   first = ""; last = ""; ev_first = ""; ev_last = ""; it_first = ""; it_last = ""
-  memg = ""
+  memg = ""; ityp = ""; iaz = ""
   while ((getline line < f) > 0) {
     s = stamp_of(line)
     if (s == "") continue
     if (first == "") first = s
     last = s
-    # Nothing in the log states the instance type. The line the NUMA fix
-    # prints after the restore reports usable memory instead, and that
-    # separates a 384 GiB machine from a 768 GiB one without ambiguity --
-    # worth keeping, because a run that switched families mid-flight cannot
-    # be read from EC2 afterwards: the instances are gone.
+    # Which pool served this node. The bootstrap reads both from IMDS and
+    # prints them on one line, because EC2 forgets a reclaimed instance
+    # within the hour, and the default launch template version moves under
+    # a run that switched families mid-flight -- so afterwards there is no
+    # other place to ask. Issue #22 wants exactly this: a capacity ladder
+    # walking (zone x type) has to be auditable once the nodes are gone.
+    if (ityp == "" && match(line, /instance_type=[^ ]+/))
+      ityp = substr(line, RSTART + 14, RLENGTH - 14)
+    if (iaz == "" && match(line, /availability_zone=[^ ]+/))
+      iaz = substr(line, RSTART + 18, RLENGTH - 18)
+    # Usable memory, kept as the fallback. It is what the NUMA fix happens to
+    # print after a restore, and 384 GiB against 768 separates the two
+    # families unambiguously -- which was the only signal available before
+    # the line above existed, so logs from the 2026-08 run still need it.
     if (memg == "" && match(line, /[0-9]+ GiB available/)) {
       memg = substr(line, RSTART, RLENGTH); sub(/ GiB available/, "", memg)
     }
@@ -238,6 +247,8 @@ function stamp_of(line) {
   itf[iid] = it_first; itl[iid] = it_last
   fdisp[iid] = first
   mem[iid] = memg
+  ity[iid] = ityp
+  zone[iid] = iaz
 }
 
 END {
@@ -246,10 +257,10 @@ END {
   # then printed in whichever shape was asked for, so a chart drawn from the
   # rows and the table a human read can never disagree about this run.
   if (tsv == "1")
-    print "#instance\treason\tstarted\tended\tevolution_started\tevolution_ended\titeration_first\titeration_last\tuptime_s\tevolution_s\tmemory_gib"
+    print "#instance\treason\tstarted\tended\tevolution_started\tevolution_ended\titeration_first\titeration_last\tuptime_s\tevolution_s\tmemory_gib\tinstance_type\tavailability_zone"
   else
-    printf "%-21s %-20s %-20s %-17s %-14s %s\n", \
-      "instance", "started (UTC)", "ended (UTC)", "reason", "iterations", "evolution"
+    printf "%-21s %-17s %-20s %-20s %-17s %-14s %s\n", \
+      "instance", "pool", "started (UTC)", "ended (UTC)", "reason", "iterations", "evolution"
   span_lo = 0; span_hi = 0; up = 0; ev = 0
   for (i = 1; i <= n; i++) {
     iid = order[i]
@@ -259,16 +270,25 @@ END {
     up += u; ev += e
     if (span_lo == 0 || start[iid] < span_lo) span_lo = start[iid]
     if (fin[iid] > span_hi) span_hi = fin[iid]
+    # New columns go on the end: a consumer that indexes by position keeps
+    # working, and plot_ledger.py reads by header name anyway.
     if (tsv == "1")
-      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\n", \
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n", \
         iid, reason[iid], fdisp[iid], strftime_iso(fin[iid]), \
         strftime_iso(evs[iid]), strftime_iso(eve[iid]), \
         (itf[iid] == "" ? "-" : itf[iid]), (itl[iid] == "" ? "-" : itl[iid]), \
-        u, e, (mem[iid] == "" ? "-" : mem[iid])
-    else
-      printf "%-21s %-20s %-20s %-17s %-14s %s\n", \
-        iid, fdisp[iid], strftime_iso(fin[iid]), reason[iid], \
+        u, e, (mem[iid] == "" ? "-" : mem[iid]), \
+        (ity[iid] == "" ? "-" : ity[iid]), (zone[iid] == "" ? "-" : zone[iid])
+    else {
+      # The zone keeps only what distinguishes it. The region is pinned and
+      # printed on every other line already, so "us-west-2d" earns one column
+      # of width as "2d" and the type keeps the rest.
+      short = zone[iid]; sub(/^.*-/, "", short)
+      pool = (ity[iid] == "" ? "-" : ity[iid] (short == "" ? "" : "/" short))
+      printf "%-21s %-17s %-20s %-20s %-17s %-14s %s\n", \
+        iid, pool, fdisp[iid], strftime_iso(fin[iid]), reason[iid], \
         (itf[iid] == "" ? "none" : itf[iid] ".." itl[iid]), hms(e)
+    }
   }
 
   span = span_hi - span_lo
