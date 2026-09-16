@@ -89,6 +89,17 @@ returns success, so a node reclaimed mid-upload leaves a torn set that restore
 will not select — a timestamp would have picked exactly that set, because it
 is the newest.
 
+**What the two-minute warning buys is output and logs, not a checkpoint.** A
+push moves both retained generations, because the slot being written to is
+always the one written two rotations ago and holds neither of the current
+pair; 63 pushes during the 2026-08 run measured a median of 276 seconds for
+that 171 GB. Fitting it into 120 seconds would need 1.4 GB/s from a volume
+provisioned for 1.0, so the recovery point is always the last checkpoint an
+ordinary tick banked, and the expected loss per interruption is half a
+checkpoint interval. The flush attempting it anyway is harmless — the useful
+half goes first, `CURRENT` is untouched, and the half-written slot is by
+construction the one `CURRENT` does not name.
+
 [docs/architecture.md](docs/architecture.md) carries the detailed diagrams and
 the reasoning behind each choice: the region and instance measurements, why a
 public subnet, the checkpoint interval arithmetic, and the known operational
@@ -180,7 +191,7 @@ make upload-inputs     # derive the cloud parfile from it and upload
 make init-compute
 eval "$(make login)"   # assume the operator role with MFA -- needed by every
                        # target below, and by every terraform command
-make run               # launch the spot node
+make run               # launch the spot node, walking the capacity ladder
 make ssm               # open a shell on it
 make throughput        # read sec/iter and the cost projection out of the run log
 make stop              # terminate it
@@ -265,6 +276,77 @@ Three manual steps have no Terraform equivalent:
    threshold. That produced a false alarm on 2026-08-27; see *Why the budget
    measures the calendar year* below.
 
+### When a pool has no capacity
+
+`make run` walks a ladder of `(zone, instance type)` pairs rather than
+insisting on one. Set `LAUNCH_LADDER` in `.env`; unset, it is a single attempt
+with whatever `terraform.tfvars` says.
+
+This exists because on 2026-08-27 it did not. The first production node was
+reclaimed for want of capacity, the relaunch into the same zone could not be
+filled either, and each recovery needed a human to notice the apply was
+hanging, work out which failure it was, and edit `availability_zone`. The
+fallback order was written down — in prose, in a comment, walked by nothing.
+
+The evening also showed the prose had the wrong shape. Five consecutive
+`c7a.48xlarge` nodes in `us-west-2a` were reaped inside half an hour each and
+banked nothing, while an `m7a.48xlarge` request **in the same zone** was
+filled on the first poll. They are the same Genoa silicon with the same twelve
+memory channels, so for this evolution the only thing `c7a` buys is the lower
+price. A search that will not leave the `c7a` row saves 0.7 USD/h and spends
+3 USD/h recomputing work it keeps losing. A rung therefore crosses both
+dimensions.
+
+How long a rung gets is a decision now, not an accident.
+`InsufficientInstanceCapacity` is documented as an EC2 *server* error, so the
+AWS SDK retries it like any 500; the provider's own retry around
+`RunInstances` covers only IAM propagation. At the default 25 attempts with a
+300 second backoff cap, one rung holds the ladder for the better part of an
+hour — which is right when there is one pool and nothing better to do, and
+wrong when five others are waiting. The ladder lowers it and cycles instead.
+
+It refuses to walk past a quota or past a failure it does not recognise, since
+another pool fixes neither. Every attempt is recorded to
+`logs/<run>/launch-<stamp>.json`, and the ledger now names the pool each node
+actually came from — EC2 forgets a reclaimed instance within the hour, so
+afterwards there is nowhere else to ask.
+
+`make sample-scores`, hourly from cron, builds the series that would let the
+ladder be ordered by more than price. AWS publishes no history for spot
+placement scores.
+
+### Testing the interruption handler
+
+The handler has fired for real a dozen times, so its common case is proven.
+The cases whose moment could not be chosen are not: a notice arriving while a
+sync tick holds the lock, or inside the thirty seconds after a checkpoint set
+finishes being written.
+
+Setting `fis_enabled = true` creates a Fault Injection Service role and
+experiment template, and `make interrupt` fires one at the running node. The
+node reads the same instance-metadata response it reads in production, so what
+is under test is the handler rather than a mock of it.
+
+```bash
+make interrupt         # ~0.20 USD per shot; the node is gone two minutes later
+```
+
+Aim it with `make ssm` on the node's tick log. Afterwards the node leaves
+`logs/<run>/ended-<instance>.json` carrying what the notice said and when, and
+`flushed-<instance>.json` **only if the flush finished** — its absence is the
+answer rather than a gap, since the flush is the one caller whose own log
+lines never reach S3.
+
+Aim the shots at an ops rehearsal rather than at physics: what is under test is
+ordering, not byte counts, and `terraform.tfvars.example` carries a profile
+that runs one on a `c7a.2xlarge` with the gp3 free baseline of 125 MB/s. That
+is not a saving but a window — 25 GB then takes about 200 seconds to write and
+as long again to push, which a human can aim at, where the production
+1000 MB/s leaves 25 seconds and luck.
+
+`fis_enabled` defaults to false. A production run should not carry a way to
+interrupt itself.
+
 ### Watching a run without MFA
 
 `gw230529-terraform-operator` requires MFA, which is the right answer for
@@ -277,7 +359,8 @@ holding the MFA device.
 
 `stacks/foundation` therefore also creates `gw230529-observer`: the same IAM
 user, no MFA condition, and read access to the data bucket, the foundation and
-compute state files, four EC2 describes, CloudWatch metrics and Cost Explorer.
+compute state files, EC2 describes, spot capacity and price queries,
+CloudWatch metrics and Cost Explorer.
 Nothing it carries can create, change, destroy or spend.
 
 ```bash

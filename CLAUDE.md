@@ -910,6 +910,153 @@ OpenCAE 講演用の図と動画。**Lambda 案は実測で棄却した** — �
   (NAS がオブジェクト単位で Deep Archive にバックアップされるため、
   ファイル数を減らすこと自体が目的)
 
+### 本番 sync.log の解析で前提が 3 つ崩れた (2026-09-16、observer で読み直し)
+
+`output/prod-dx19p2-1750m/sync.log` (3,492 行 / 14 ノード / 45 時間) と
+probe 側 123 行を読んだ結果。**費用ゼロで #24 の半分が解けた。**
+
+**1. push は 95 秒ではなく中央値 276 秒。1 push = 2 世代 171 GB。**
+
+| | 秒 (n=63) |
+| --- | --- |
+| 最小 | 241 / 中央値 **276** / 最大 344 |
+
+keep=2 で disk に 2 世代あり、push 先は必ず「2 回転前の slot」なので現行 2 世代の
+どちらも存在しない。`aws s3 sync` は両方上げ `--delete` で古い 2 世代を消す。
+171 GB / 276 s = **620 MB/s** で gp3 1000 MB/s と整合。
+独立した裏付けは請求側 — S3 Tier-1 PUT **1,646,923 件**に対し
+63 push × 192 file × **2 世代** × 56 part = **1,354,752**。1 世代説では半分。
+
+- **slot 方式の代償は「保管 312 GB」だけでなく転送 2 倍**。PUT 8 USD の約半分と
+  push 時間 276 秒の約半分がこれ。安全性を買っているので直すとは限らないが、
+  記録されていなかった
+- **中断時の flush は checkpoint を押し切れない。構造的に不可能。**
+  171 GB を 120 秒に収めるには 1.4 GB/s 要る。単一世代 85.7 GB でも 714 MB/s で、
+  実測 620 MB/s を超える。**害はない** — output/log を先に押すので有用な部分は完了し、
+  CURRENT は成功後にしか書かれず、半端が残るのは非 CURRENT slot で次 tick の
+  `--delete` が掃除する。失うのは S3 PUT 代のみ。ただし設計文書が
+  「disk にあるものを flush する」と書いていて救えるように読めたので訂正した
+- **BNS #10 はこちらと違って境界線上**: 35–50 GB × 2 世代 = 70–100 GB、
+  1000 MB/s で 70–100 秒。測り方は `pushing` → `CURRENT` の差分 (2 世代ぶんに注意)
+
+**2. count guard は本番で一度も発火していない。守っているのは quiescence guard だけ。**
+
+| | prod | probe |
+| --- | --- | --- |
+| `checkpoint still being written` (quiescence) | **16** | 0 |
+| `generation it_N has k of N files` (count) | **0** | **0** |
+
+Cactus は 192 rank が同時にファイルを作るので `have == RANKS` が最初から成立する。
+ops-rehearsal は逐次 dd なので逆に count 側しか踏まない → **#24 では E2 を
+E2a (書き込み中 = count) / E2b (完了後 30 秒以内 = quiescence) に割る**。
+
+**3. flush 自身のログは必ず死ぬ。** flush は `tick start` を書いた直後に output を
+同期するので、それ以降の自分の行はノードと一緒に消える。ended マーカー 15 件を
+UTC で突き合わせても flush の lock 待ちは 1 件も S3 に無い。
+→ `flushed-<id>.json` を flush 完了後に書く実装を追加。**無いこと自体が答え**。
+実測済みの lock 待ちは 11 件、最大 **182 秒** (既に 120 秒の窓を超えている)。
+
+**4. 【新規】最後の checkpoint push が 27 ファイル失敗していた。**
+2026-08-29T06:51:20Z、botocore の
+`Need to rewind the stream <AwsChunkedWrapper>, but stream is not seekable`。
+`set -e` で sidecar が死に **CURRENT は書かれず**、次 tick が 18 秒待って再送し
+06:56:08 に自己修復。完成世代が quiescence を通った後なので torn file ではない。
+**「CURRENT は push 成功後にのみ書く」規律が偶然に救った本物の検証**。
+ただし**誰にも通知されない** — 恒常的に失敗し続けたら bank ゼロのまま走り、
+中断の瞬間に全部失う。issue 化の候補。
+
+### user data が 16 KB 上限に 1.4 KB まで迫っていた (2026-09-16)
+
+EC2 の上限は base64 **前**の raw バイト = gzip 後。HEAD で **14,980 / 16,384**。
+**次にコメントを 1 ブロック足した人が launch を失敗させる**状態だった
+(しかも EC2 のエラーはファイル名もブロック名も言わないし、課金承認の後に出る)。
+
+対処は `modules/spot_node` で **render 時に行コメントを落とす** (`replace` + RE2)。
+repo のコメントはそのまま、ペイロードは **17.2 KB → 5.0 KB**、余裕 69%。
+否定文字クラスで `#!` を守る (生成スクリプト 4 本の shebang)。
+Terraform で実評価して確認済み: コメント 0 行 / shebang 4 本 / `bash -n` 通過。
+launch template に `precondition` を置いたので**以後は plan 時に落ちる**。
+
+- 代償: ノード上の `/usr/local/bin/gw230529-*` を SSM で読んでもコメントが無い。
+  注釈付きの原本は repo 側
+
+### #24 実装: FIS で中断を召喚する (2026-09-16)
+
+`fis_enabled = true` で `stacks/compute` が FIS role + experiment template を作る。
+既定 false — **本番 run が自分を中断する手段を持つべきではない**。
+
+| | |
+| --- | --- |
+| action | `aws:ec2:send-spot-instance-interruptions`、`durationBeforeInterruption = PT2M` (最小) |
+| 効果 | 開始と同時に notice、2 分後に terminate。**開始時刻が latency の零点** |
+| spot request status | `instance-terminated-by-experiment` (本物は `-no-capacity`) |
+| 料金 | **0.10 USD / action-minute**、PT2M で 1 発 0.20 USD |
+| 境界 | **role**。`iam:PassRole` は `role/gw230529-*` のみ、その role は
+`ec2:SendSpotInstanceInterruptions` on `Project=gw230529` の 1 つだけ |
+
+- `selection_mode = ALL` (tutorial の `COUNT(1)` ではない)。ノードは常に 1 台なので
+  集合は同じだが、`COUNT(1)` は「該当から無作為に 1 台」の意味で、
+  2 台目が存在したら**失敗せずにコイン投げで撃つ**
+- trust policy に `aws:SourceAccount` (confused deputy)
+- `make interrupt` に**確認プロンプトは置かない**。狙った瞬間に撃つのが目的で、
+  決断と API 呼び出しの間のプロンプトがそのまま外れになる。
+  タダで確認できること (template の存在 / インスタンス稼働 / relaunch loop 不在) だけ見る
+- operator policy に `fis:` 14 アクション追加 → **115 → 129**。
+  FIS の ARN は生成 id で名前で絞れないので `*`。**適用は `make apply-bootstrap`**
+  (role の inline policy なので admin 不要)
+
+**実験マトリクス (5 発 / 約 1.3 USD)**: E0 (静かな tick 間) → E2a (書き込み中) →
+E2b (書き終わり 30 秒以内) → E1 (push 中) → E3 (未 push の完成世代あり)。
+tfvars プロファイルは ops-rehearsal / c7a.2xlarge / **gp3 無料 baseline 125 MB/s**。
+これは節約ではなく**窓**で、25 GB が書き込み約 200 秒・push 約 200 秒になり
+手で狙える (本番 1000 MB/s なら 25 秒で運任せ)。
+**E1 と E3 の期待結果が同じに見えるのが正しい** — flush は待たされようが自分で
+始めようが押し切れない。違うのはどちらの slot が半端になるかだけ。
+
+**E4 (dx=28 の本物 Cactus) はやらないと決定**。唯一の pros だった
+「本物の書き込みに対する quiescence guard」は上記 2 の 16 件で既に無料で得られている。
+加えて **dx=28 parfile がこの repo のパイプラインに無い** (`upload_inputs.sh` は
+dx=19.2 専用で fail-fast 検査もそれ用)。
+
+### #22 実装: 容量を探索にする (2026-09-16)
+
+**ICE を待っているのは provider ではなく AWS SDK だった。** `aws_instance` の
+RunInstances リトライは IAM propagation の 2 種類だけ。
+`InsufficientInstanceCapacity` は EC2 API の **server error 表 (HTTP 500)** に載るので
+SDK が 500 として retry する。provider 既定 `max_retries = 25`、backoff 上限 300 秒
+→ **1 rung で 1 時間近く塞がる**。8/27 の 15 / 42 / 12 分はこの帯の中。
+
+- `aws_max_retries` を変数化し、`scripts/launch_with_ladder.sh` が小さい値を渡して
+  **fail fast → 次の rung → 一周したら再度**。6 プールを 10 回舐める方が
+  1 プールで待つより当たる。失敗した attempt は**何も作らず課金もしない**
+- **`timeout` で terraform を kill するのは禁じ手**。RunInstances 成功直後に
+  kill すると state に無いノードが課金を続ける
+- **rung は (AZ × instance type)**。8/27 の逼迫は c7a プール限定で、
+  同じ AZ の m7a は初回 60 秒ポーリングで掴めた。同じ Genoa・同じ 12ch なので
+  帯域律速の evolution には等価、c7a の優位は価格だけ。
+  c7a 行に固執する探索は 0.7 USD/h を節約して 3 USD/h を再計算に燃やす
+- **quota と未知のエラーでは歩かず止まる**。別プールでは直らないし、
+  無人ループが誤解のまま 3 USD/h で梯子を登るのがこの機能の新しい失敗モード
+- AZ は foundation の subnet と**事前照合**。逼迫中に typo が容量問題に見えるのを防ぐ
+- 記録: `logs/<run>/launch-<stamp>.json` に全 rung の試行・理由・秒数。
+  併せて **ledger に pool 列**を追加 (user_data が IMDS から
+  instance-type / AZ を bootstrap log に書くようにした)。
+  EC2 は中断ノードを 1 時間で忘れるので、後から引ける場所が他に無い
+
+**placement score サンプラー** (`make sample-scores`、毎時 cron、observer で MFA 不要):
+
+- **価格は採らない**。90 日遡って 1 コールで取れるので毎時記録は AWS の
+  アーカイブの複製にしかならない。スコアは**アーカイブが存在しないから**採る
+- 構成は**固定**。API の制約が 2 つ効く — 3 タイプ未満は意図的に低いスコアを返すので
+  per-type の系列は要求できない。24 時間あたりの**新規**構成数が制限されうるが
+  同一構成の再送は数えない → **byte 一致で送り続けること**
+- observer role に `GetSpotPlacementScores` / `DescribeSpotPriceHistory` /
+  `DescribeAvailabilityZones` / `DescribeInstanceTypeOfferings` を追加。
+  全部 read かつアカウント全体クエリで絞れない。**要 `make apply-foundation`**
+- 適用前は AccessDenied を認識して**静かに exit 0**。毎時 stack trace をメールすると
+  行が 1 本も溜まらないうちに切られる
+- 保存先は `.spot-samples/` (gitignore)。2 週間後に図と snapshot を `data/` へ
+
 ## 言語設定
 
 このプロジェクトでは**日本語**での応答を行う。ただし以下は**英語必須**。
@@ -997,6 +1144,13 @@ gitignore 済み: `*.tfvars` / `*.tfstate*` / `backend.hcl` / `.env` / `.terrafo
    暫定対処は `preexisting_spend_usd`、本筋はこのタグの有効化。
    上記「budget の集計期間は暦年だった」
 3. **spot vCPU クォータ緩和** — `L-34B43A08` を 192 以上に
+4. **operator policy の再適用** — `policies/terraform-operator.json` に
+   `fis:` 14 アクションを追加した (2026-09-16、#24)。role の inline policy なので
+   **`make apply-bootstrap` で足りる**。`make check-permissions-policy` が
+   **129/129** を返すことを先に確認する
+5. **observer role の再適用** — `make apply-foundation`。
+   `ec2:GetSpotPlacementScores` ほか 3 つの read を追加した (#22)。
+   適用するまで毎時 cron は静かに何もしない
 
 ## Git運用
 
