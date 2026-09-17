@@ -35,6 +35,14 @@ RUN_NAME ?= $(notdir $(patsubst %/,%,$(firstword $(wildcard $(RESULTS_ROOT)/*/))
 # which is the only target here where the second pass is not free.
 UNITS ?= geom si
 
+# The published reference run, once `make fetch-inputs ARGS=--reference` has
+# unpacked it under INPUTS_DIR. plot_psi4.py overlays its waveform on this
+# run's and skips that figure when the file is absent, so the mount is
+# conditional too: docker would otherwise create the missing host directory
+# itself, root-owned, and the figure would silently never appear.
+REFERENCE_DIR := $(INPUTS_DIR)/bhns_20252103
+REF_MOUNT := $(if $(wildcard $(REFERENCE_DIR)),-v $(abspath $(REFERENCE_DIR)):/ref:ro,)
+
 # The container runs as the invoking user so the outputs are not root-owned;
 # the two /tmp cache dirs silence matplotlib and fontconfig complaints that
 # a read-only home causes.
@@ -44,6 +52,7 @@ docker run --rm -u $$(id -u):$$(id -g) \
 	-v $(abspath postprocessing):/app:ro \
 	-v $(abspath $(RESULTS_ROOT)/$(RUN_NAME)):/data:ro \
 	-v $(abspath postprocessing/out/$(RUN_NAME)):/out \
+	$(REF_MOUNT) \
 	-w /app $(POSTPROC_IMAGE)
 endef
 

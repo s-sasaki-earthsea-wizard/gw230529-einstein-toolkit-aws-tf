@@ -59,6 +59,7 @@ REF_NAME="bhns_20252103.tar.gz"
 REF_SHA="ccfbe412cac4f33db834d24d8b939e3b8d352da5c32e59ac590eceb12688c028"
 REF_URL="https://bitbucket.org/einsteintoolkit/www/downloads/bhns_20252103.tar.gz"
 REF_LOG="bhns_20252103/bhns_gw230529.out"
+REF_PSI4="bhns_20252103/mp_psi4_l2_m2_r500.00.asc"
 
 FORCE=""
 WANT_REFERENCE=""
@@ -155,16 +156,19 @@ fi
 if [ -n "${WANT_REFERENCE}" ]; then
   echo ""
   fetch "${REF_NAME}" "${REF_SHA}" "${DEST}/${REF_NAME}" "${REF_URL}"
-  # Just the log. The rest of the archive -- 2D snapshots, horizon surfaces --
-  # is what the simulation repository analyses; this repository only compares
-  # info lines.
-  echo "  ${REF_NAME}: extracting ${REF_LOG}"
-  tar xzf "${DEST}/${REF_NAME}" -C "${DEST}" "${REF_LOG}"
-  if [ ! -f "${DEST}/${REF_LOG}" ]; then
-    echo "  ${REF_LOG}: MISSING from the archive"
-    exit 1
-  fi
-  printf '  %-58s %8s bytes\n' "${REF_LOG}" "$(stat -c%s "${DEST}/${REF_LOG}")"
+  # The log, which make validate-run compares info lines against, and the
+  # (2,2) waveform at the outermost radius, which plot_psi4.py overlays on
+  # this run's. The rest of the archive -- 2D snapshots, horizon surfaces --
+  # is what the simulation repository analyses.
+  for member in "${REF_LOG}" "${REF_PSI4}"; do
+    echo "  ${REF_NAME}: extracting ${member}"
+    tar xzf "${DEST}/${REF_NAME}" -C "${DEST}" "${member}"
+    if [ ! -f "${DEST}/${member}" ]; then
+      echo "  ${member}: MISSING from the archive"
+      exit 1
+    fi
+    printf '  %-58s %8s bytes\n' "${member}" "$(stat -c%s "${DEST}/${member}")"
+  done
 fi
 
 echo ""

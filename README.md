@@ -124,12 +124,12 @@ templates/
 postprocessing/
   Dockerfile           Pinned render environment: kuibit, matplotlib, ffmpeg
   common.py            Palette, unit systems, and the ASCII readers that deduplicate
-  plot_psi4.py         Psi4 (2,2) waveform at the outermost extraction radius
+  plot_psi4.py         Psi4 (2,2) waveform, and its overlay on the reference run
   plot_timeseries.py   Max density, horizon masses, rest mass on the grid
   render_frames.py     Density frames on the orbital plane, movie, 3-panel snapshot
   plot_ledger.py       Node timeline: which spot node held the run, and what it banked
 scripts/
-  fetch_inputs.sh      Download the gallery artefacts, checksum pinned
+  fetch_inputs.sh      Download the gallery artefacts, checksum pinned (--reference adds the published run)
   upload_inputs.sh     Derive the cloud parfile, check it, upload it
   fetch_results.sh     Sync a finished run's output/ prefix into results/
   pack_results.sh      Compress a results tree to tar.gz, verify, delete the tree
@@ -437,6 +437,21 @@ round-tripping through a mass and a `G`. One quantity resists the
 translation: Ψ4 is `s^-2` in SI and the figure says so, but what a
 non-specialist actually recognises is the strain `h`, and recovering that
 takes a double time integration these scripts deliberately do not attempt.
+
+**Against the published run.** Once `make fetch-inputs ARGS=--reference` has
+unpacked the reference run, `make figures` also draws `psi4_vs_reference_*`:
+this run's (2,2) waveform over the reference's, with |ΔΨ₄| / max|Ψ₄| on a
+log axis beneath. Overlaid alone the two are one line — which is the claim,
+but not evidence, since the eye cannot check agreement below a percent. The
+lower panel is the evidence: machine precision at t = 0 (same initial data),
+about 1e-14 while nothing has happened yet, then thirteen orders of magnitude
+of growth through inspiral and merger to a maximum of **4.4e-4 of the peak**.
+The two were never the same computation (480 ranks on 12 nodes against 192 on
+one), and the merger amplifies whatever they disagree on; that the difference
+still ends below 1e-3 is the result. Both files store the same 15.36 M
+cadence, so no interpolation enters the subtraction — and the thin line is
+solid on purpose: this figure spends dashes on guide lines, and dashes on 127
+samples break at the corners and read as gaps.
 
 Two properties of the data are worth knowing before judging the figures:
 
