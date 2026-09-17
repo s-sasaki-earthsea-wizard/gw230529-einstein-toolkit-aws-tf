@@ -437,6 +437,13 @@ Two properties of the data are worth knowing before judging the figures:
   run changed instance family at the same time of day it changed time of day.
   The script measures every band it draws back against the ledger row it came
   from, and refuses to write a figure that disagrees with the numbers.
+
+  It draws the run rather than the bucket: a node launched by hand after the
+  run had already finished is in the ledger, and counting it stretches the
+  wall clock by 17 minutes, so the figure states the nodes that served the
+  run and `verify()` checks that the two sets of totals still add up. Times
+  are in the units the audience reads — local hours on the axis, milliseconds
+  for simulated time, never solar masses.
 - **`output/` expires 90 days after the run** (see modules/storage), which
   for the production run lands weeks before the talk that needs the data.
   `make fetch-results` is therefore also the preservation step. Once the
