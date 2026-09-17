@@ -109,6 +109,10 @@ setup: ## Create .env, backend.hcl and terraform.tfvars from the templates
 region-scout: ## Compare candidate regions on spot score, price and quota
 	@scripts/region_scout.sh
 
+.PHONY: sample-scores
+sample-scores: ## Append one spot placement score sample (hourly from cron; issue #22)
+	@scripts/sample_placement_scores.sh
+
 .PHONY: check-permissions
 check-permissions: ## Simulate every IAM action against a live principal (PRINCIPAL=<arn>)
 	@scripts/check_permissions.sh $(PRINCIPAL)
@@ -233,7 +237,11 @@ run: ## Launch the spot instance and start a run
 		echo ""; \
 	fi
 	@echo "This starts billing. The node self-terminates when the run ends."
-	@$(TF) -chdir=stacks/compute apply -input=false -var run_enabled=true
+# Through the ladder, so a dry pool moves to the next (zone, instance type)
+# pair instead of blocking on one until a human notices (#22). With no
+# LAUNCH_LADDER in .env it is a single apply with the tfvars settings, which
+# is what this line used to be.
+	@scripts/launch_with_ladder.sh
 
 .PHONY: stop
 stop: ## Terminate the spot instance, keeping the launch template
@@ -261,6 +269,50 @@ ssm: ## Open a shell on the running node through SSM Session Manager
 		echo "no instance is running -- make run first"; exit 1; \
 	fi; \
 	echo "$$cmd" && exec $$cmd
+
+.PHONY: interrupt
+interrupt: ## Summon a spot interruption on the running node (bills; issue #24)
+# There is no confirmation prompt, and that is deliberate. The point of this
+# target is to fire at a chosen instant -- while a sync tick holds the lock,
+# or inside the thirty seconds after a checkpoint set finishes -- and a prompt
+# between the decision and the API call is the delay that makes the shot miss.
+# The guards below are the ones that can be checked without costing time.
+#
+# With durationBeforeInterruption at PT2M the notice is issued as the
+# experiment starts and the node is terminated two minutes later, so the
+# moment this command returns is the zero for the detection latency.
+	@id=$$($(TF) -chdir=stacks/compute output -raw fis_experiment_template_id) || \
+		{ echo ""; \
+		  echo "could not read the compute stack (terraform message above)."; \
+		  echo "No session in this shell? Try: eval \"\$$(make login)\""; \
+		  exit 1; }; \
+	if [ -z "$$id" ] || [ "$$id" = "null" ]; then \
+		echo "no experiment template exists."; \
+		echo "Set fis_enabled = true in stacks/compute/terraform.tfvars and apply."; \
+		exit 1; \
+	fi; \
+	if pgrep -f relaunch_until_done.sh >/dev/null 2>&1 && [ ! -e .relaunch-stop ]; then \
+		echo "the relaunch loop is running: it would relaunch the node this kills,"; \
+		echo "and the experiment series would lose its sequence."; \
+		echo "  touch .relaunch-stop"; \
+		exit 1; \
+	fi; \
+	iid=$$($(TF) -chdir=stacks/compute output -raw instance_id 2>/dev/null); \
+	if [ -z "$$iid" ] || [ "$$iid" = "null" ]; then \
+		echo "no instance is running -- nothing to interrupt"; exit 1; \
+	fi; \
+	echo "interrupting $$iid via $$id"; \
+	fired=$$(date -u +%Y-%m-%dT%H:%M:%SZ); \
+	exp=$$(aws fis start-experiment --experiment-template-id $$id \
+		--tags Project=gw230529 --query 'experiment.id' --output text) || exit 1; \
+	echo ""; \
+	echo "  experiment   $$exp"; \
+	echo "  notice at    $$fired   (the zero for detection latency)"; \
+	echo "  termination  about two minutes later"; \
+	echo ""; \
+	echo "Watch:   aws fis get-experiment --id $$exp --query experiment.state"; \
+	echo "Then:    make ledger AWS_PROFILE=gw230529-observer"; \
+	echo "         aws s3 ls $$($(TF) -chdir=stacks/compute output -raw log_prefix)"
 
 .PHONY: throughput
 throughput: ## Read sec/iter and the cost projection out of a run log

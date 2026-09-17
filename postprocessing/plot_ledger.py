@@ -23,6 +23,17 @@ Read the confound with it: this run moved from c7a to m7a at the same time it
 moved from US morning to US evening, so the timeline cannot separate capacity
 by hour from capacity by instance family. The family sits in each row label so
 that the figure carries its own limit.
+
+The figure draws the run, not the bucket. One node was started by hand after
+the run had already finished; it is in the ledger, because it cost money and
+wall clock, but it served nothing, so it is neither drawn nor counted in the
+title. Including it stretches the run by 17 minutes and is the difference
+between 45h50m and 45h33m. The ledger keeps the audit trail and verify()
+still checks every row of it.
+
+Times are stated the way the audience reads them: the region's local hours on
+the axis, milliseconds for simulated time. Nothing here is in solar masses,
+which is the unit the parfile and every Cactus log actually use.
 """
 
 import argparse
@@ -36,7 +47,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from matplotlib.ticker import FuncFormatter
 
-from common import BLUE, GREEN, VERMILLION, apply_style, save
+from common import BLUE, GREEN, M_SUN_SECONDS, VERMILLION, apply_style, save
 
 # us-west-2 was on PDT for the whole of August 2026, so a fixed offset is
 # exact here and spares the image a tz database.
@@ -47,11 +58,22 @@ PACIFIC_LABEL = "PDT"
 # conventional definition rather than one fitted to this run's interruptions.
 BUSINESS_HOURS = (8, 17)
 
-# Nothing in the bootstrap log records the instance type. The line printed
-# after the restore reports usable memory, which the ledger carries through,
-# and the two families this run used are 384 and 768 GiB -- far enough apart
-# that one threshold is unambiguous rather than a guess.
+# How a node's family is decided, in order of preference.
+#
+# Since 2026-09-16 the bootstrap reads the instance type from IMDS and prints
+# it, so a ledger drawn from a run after that date states the family rather
+# than inferring it. The 2026-08 run predates the line, and its logs are the
+# ones this chart was written for, so the inference stays: usable memory is
+# what the NUMA fix happens to print after a restore, and 384 GiB against 768
+# separates the two families that run used far enough apart that a single
+# threshold is unambiguous rather than a guess.
 FAMILY_BY_MEMORY = ((500, "c7a"), (10**9, "m7a"))
+
+# Cactus measures time in solar masses, which reads as nothing at all outside
+# numerical relativity, so the figure states milliseconds. The factor lives in
+# common.py, which every figure now shares: a physical constant defined twice
+# in one package is a discrepancy waiting to be found in a printed slide.
+FINAL_TIME_M = 1750.02  # where the run stopped, per Cactus::cctk_final_time
 
 GREY = "#6E6E78"
 BAND_HEIGHT = 0.62
@@ -78,11 +100,17 @@ class Node:
         self.uptime_s = int(row["uptime_s"])
         self.evolution_s = int(row["evolution_s"])
         self.memory_gib = _int(row["memory_gib"])
+        # Absent from ledgers written before 2026-09-16; read by name and
+        # defaulted, so an old TSV and a new one both parse.
+        self.instance_type = row.get("instance_type", "-")
+        self.availability_zone = row.get("availability_zone", "-")
         self.banked = False
         self.after_the_run = False
 
     @property
     def family(self):
+        if self.instance_type not in ("-", "", None):
+            return self.instance_type.split(".")[0]
         if self.memory_gib is None:
             return "?"
         for limit, name in FAMILY_BY_MEMORY:
@@ -186,7 +214,27 @@ def local_midnights(lo, hi):
     return out
 
 
-def draw(nodes, totals, outdir):
+def run_totals(nodes):
+    """The run's own numbers, which are not the whole ledger's.
+
+    The ledger measures everything that reached the bucket under this run
+    name, and for this run that includes a node launched by hand two minutes
+    after it finished. Counting it makes the run look 17 minutes longer than
+    it was and drags the effective-compute figure down with it, so the totals
+    the figure states are taken over the nodes that served the run.
+    """
+    served = [n for n in nodes if not n.after_the_run]
+    lo = min(n.started for n in served)
+    hi = max(n.ended for n in served)
+    return {
+        "nodes": len(served),
+        "span_s": round((hi - lo).total_seconds()),
+        "uptime_s": sum(n.uptime_s for n in served),
+        "evolution_s": sum(n.evolution_s for n in served),
+    }
+
+
+def draw(nodes, run, outdir):
     apply_style()
     # A timeline carries far more labels than a line chart of the same size,
     # so it wants smaller type than the other figures in this directory.
@@ -197,12 +245,18 @@ def draw(nodes, totals, outdir):
             "xtick.labelsize": 10,
             "ytick.labelsize": 10,
             "legend.fontsize": 10,
+            # Type 42 rather than matplotlib's default Type 3: the figure goes
+            # into a LaTeX abstract that people will zoom, and Type 3 renders
+            # poorly when scaled. Both are embedded either way.
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
         }
     )
 
-    lo = min(n.started for n in nodes)
-    hi = max(n.ended for n in nodes)
-    fig, ax = plt.subplots(figsize=(10.0, 5.8))
+    served = [n for n in nodes if not n.after_the_run]
+    lo = min(n.started for n in served)
+    hi = max(n.ended for n in served)
+    fig, ax = plt.subplots(figsize=(10.0, 4.8))
 
     # Working hours first, so every mark sits on top of them.
     for day in local_midnights(lo - timedelta(days=1), hi):
@@ -220,7 +274,7 @@ def draw(nodes, totals, outdir):
         ax.axvline(X(day), color="0.6", linewidth=0.9, linestyle=(0, (2, 4)), zorder=1)
 
     drawn = []
-    for row, node in enumerate(nodes):
+    for row, node in enumerate(served):
         colour = colour_of(node)
         # The node's whole life, pale. This is what was paid for.
         ax.barh(
@@ -245,37 +299,24 @@ def draw(nodes, totals, outdir):
             )
         drawn.append((node, node.started, node.ended))
 
-    finisher = next(
-        (n for n in nodes if n.reason == "finished" and not n.after_the_run), None
-    )
+    finisher = next((n for n in served if n.reason == "finished"), None)
     if finisher is not None:
         ax.annotate(
-            "finished · t = 1750 M",
-            xy=(X(finisher.ended), nodes.index(finisher)),
+            f"finished · {FINAL_TIME_M * M_SUN_SECONDS * 1e3:.2f} ms simulated",
+            xy=(X(finisher.ended), served.index(finisher)),
             xytext=(9, 0),
             textcoords="offset points",
             va="center",
             fontsize=10,
             color=GREEN,
         )
-    for node in nodes:
-        if node.after_the_run:
-            ax.annotate(
-                "hand-launched after the run finished (#25)",
-                xy=(X(node.ended), nodes.index(node)),
-                xytext=(9, 0),
-                textcoords="offset points",
-                va="center",
-                fontsize=9,
-                color="0.45",
-            )
 
     # The longest gap: capacity that nobody was awake to wait for.
     worst, at = timedelta(0), None
-    for before, after in zip(nodes, nodes[1:]):
+    for before, after in zip(served, served[1:]):
         gap = after.started - before.ended
         if gap > worst:
-            worst, at = gap, (before.ended, after.started, nodes.index(after))
+            worst, at = gap, (before.ended, after.started, served.index(after))
     if at is not None:
         ax.annotate(
             f"{_hm(worst.total_seconds())} idle",
@@ -287,10 +328,10 @@ def draw(nodes, totals, outdir):
             bbox=dict(facecolor="white", edgecolor="none", alpha=0.7, pad=1.5),
         )
 
-    ax.set_ylim(len(nodes) - 0.4, -0.7)
-    ax.set_yticks(range(len(nodes)))
+    ax.set_ylim(len(served) - 0.4, -0.7)
+    ax.set_yticks(range(len(served)))
     ax.set_yticklabels(
-        [f"{i + 1:>2}  {n.family}" for i, n in enumerate(nodes)], family="monospace"
+        [f"{i + 1:>2}  {n.family}" for i, n in enumerate(served)], family="monospace"
     )
     ax.set_ylabel("node, in start order")
     ax.tick_params(axis="y", length=0)
@@ -321,45 +362,48 @@ def draw(nodes, totals, outdir):
             f"{BUSINESS_HOURS[0]:02d}–{BUSINESS_HOURS[1]:02d})",
         ),
     ]
-    fig.legend(
+    ax.legend(
         handles=handles,
-        loc="upper left",
-        bbox_to_anchor=(0.105, 0.175),
-        ncol=2,
-        frameon=False,
+        loc="upper right",
+        ncol=1,
+        frameon=True,
+        facecolor="white",
+        edgecolor="0.85",
+        framealpha=0.92,
         handlelength=1.6,
-        borderaxespad=0,
+        borderpad=0.7,
+        borderaxespad=0.8,
     )
     # The saturated/pale split is one sentence and needs no swatch: a grey one
     # would misstate it, since every band is pale in its own colour.
     fig.text(
-        0.105,
-        0.035,
+        0.115,
+        0.02,
         "Each band is the node's whole life; the pale head is start-up — boot, "
         "image pull, a 174 GB restore from S3, the checkpoint read.",
         fontsize=9.5,
         color="0.4",
     )
 
-    duty = 100 * totals["uptime_s"] / totals["span_s"]
-    compute = 100 * totals["evolution_s"] / totals["uptime_s"]
-    effective = 100 * totals["evolution_s"] / totals["span_s"]
-    served = sum(1 for n in nodes if not n.after_the_run)
+    duty = 100 * run["uptime_s"] / run["span_s"]
+    compute = 100 * run["evolution_s"] / run["uptime_s"]
+    effective = 100 * run["evolution_s"] / run["span_s"]
     ax.set_title(
-        f"{served} spot nodes served the run, across {_hm(totals['span_s'])} of wall clock\n"
+        f"{run['nodes']} spot nodes served the run, across {_hm(run['span_s'])} of wall clock\n"
         f"nodes up {duty:.1f}% of it  ·  evolving {compute:.1f}% of their uptime  "
         f"·  {effective:.1f}% effective",
         fontsize=11.5,
         pad=22,
     )
 
-    # Room for two rows of legend and the caption under the x label.
-    fig.subplots_adjust(left=0.115, right=0.80, top=0.845, bottom=0.30)
+    # The legend sits inside now, so the only things reserved below the axes
+    # are the two-line tick labels, the x label and the caption.
+    fig.subplots_adjust(left=0.115, right=0.80, top=0.82, bottom=0.185)
     save(fig, outdir, "node_timeline")
     return drawn
 
 
-def verify(drawn, nodes, totals):
+def verify(drawn, nodes, totals, run):
     """Measure every band that was drawn back against the row it came from.
 
     An earlier version of this chart collapsed two bands to two pixels because
@@ -377,14 +421,26 @@ def verify(drawn, nodes, totals):
     span = round(
         (max(n.ended for n in nodes) - min(n.started for n in nodes)).total_seconds()
     )
+    excluded = [n for n in nodes if n.after_the_run]
     for name, got, want in (
+        # The ledger, whole: this is the parse being checked, not the figure.
         ("span", span, totals["span_s"]),
         ("uptime", sum(n.uptime_s for n in nodes), totals["uptime_s"]),
         ("evolution", sum(n.evolution_s for n in nodes), totals["evolution_s"]),
         ("nodes", len(nodes), totals["nodes"]),
+        # The title's numbers, which are the ledger's minus what was excluded.
+        # Stated as identities so that dropping a node can never quietly drop
+        # its hours from both sides at once.
+        ("drawn nodes", len(drawn), run["nodes"]),
+        ("run uptime", run["uptime_s"] + sum(n.uptime_s for n in excluded),
+         totals["uptime_s"]),
+        ("run evolution", run["evolution_s"] + sum(n.evolution_s for n in excluded),
+         totals["evolution_s"]),
     ):
         if got != want:
             raise AssertionError(f"{name}: chart has {got}, ledger says {want}")
+    if run["span_s"] > totals["span_s"]:
+        raise AssertionError("run span exceeds the ledger's")
     print(f"verified {len(drawn)} bands against the ledger")
 
 
@@ -398,15 +454,40 @@ def main():
 
     nodes, totals = load_ledger(args.ledger)
     classify(nodes)
-    drawn = draw(nodes, totals, args.out)
-    verify(drawn, nodes, totals)
+    run = run_totals(nodes)
+    drawn = draw(nodes, run, args.out)
+    verify(drawn, nodes, totals, run)
 
+    for node in nodes:
+        if node.after_the_run:
+            print(
+                f"excluded {node.instance}: launched after the run finished, "
+                f"{_hm(node.uptime_s)}, no evolution"
+            )
     served = [n for n in nodes if not n.after_the_run]
     thrown = [n for n in served if not n.banked]
+    wasted = sum(n.uptime_s for n in thrown)
     print(
-        f"{len(served)} nodes served the run, {len(thrown)} of them banked nothing "
-        f"({_hm(sum(n.uptime_s for n in thrown))} of paid time)"
+        f"{len(served)} nodes served the run over {_hm(run['span_s'])}, "
+        f"{len(thrown)} of them banked nothing ({_hm(wasted)} of wall clock)"
     )
+    # Whether that wall clock also cost money is a question about how it ended,
+    # not how long it lasted: EC2 does not charge for a Linux spot instance it
+    # reclaims inside the instance's first hour. Checked rather than asserted,
+    # because a longer-lived node in the same state would be billed.
+    free = [
+        n for n in thrown if n.reason == "spot-interruption" and n.uptime_s < 3600
+    ]
+    if len(free) == len(thrown) and thrown:
+        print(
+            "  none of it was billed: every one was reclaimed by EC2 inside its "
+            "first hour"
+        )
+    elif free:
+        print(
+            f"  {_hm(sum(n.uptime_s for n in free))} of it was unbilled "
+            f"({len(free)} of {len(thrown)} reclaimed inside the first hour)"
+        )
 
 
 if __name__ == "__main__":

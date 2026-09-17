@@ -39,3 +39,13 @@ output "log_prefix" {
   description = "S3 prefix holding the node bootstrap logs for this run."
   value       = "s3://${local.foundation.data_bucket}/logs/${var.run_name}/"
 }
+
+output "fis_experiment_template_id" {
+  description = "FIS experiment template that interrupts the node, null unless fis_enabled."
+  value       = one(aws_fis_experiment_template.spot_interruption[*].id)
+}
+
+output "available_zones" {
+  description = "Zones the foundation stack put a subnet in; the set a launch ladder may name."
+  value       = sort(keys(local.foundation.public_subnet_ids_by_az))
+}

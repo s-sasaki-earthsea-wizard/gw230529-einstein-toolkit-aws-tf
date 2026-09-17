@@ -213,6 +213,22 @@ simulate "command results" "*" \
 simulate "node metrics" "*" \
   cloudwatch:GetMetricStatistics
 
+# Fault Injection Service, for summoning a spot interruption (#24).
+#
+# FIS ARNs carry a generated id and no project name, so there is no prefix to
+# fence with -- the same shape as EC2, and the boundary is elsewhere. An
+# experiment can only do what the role it is given can do, and iam:PassRole is
+# restricted to role/gw230529-*, whose only FIS-capable member may send a spot
+# interruption to an instance tagged Project=gw230529. See policies/README.md.
+simulate "fis experiment template" "arn:aws:fis:${REGION}:${ACCOUNT}:experiment-template/EXT0123456789abcdef" \
+  fis:CreateExperimentTemplate fis:GetExperimentTemplate fis:UpdateExperimentTemplate \
+  fis:DeleteExperimentTemplate fis:StartExperiment \
+  fis:TagResource fis:UntagResource fis:ListTagsForResource
+simulate "fis experiment" "arn:aws:fis:${REGION}:${ACCOUNT}:experiment/EXP0123456789abcdef" \
+  fis:GetExperiment fis:StopExperiment
+simulate "fis listings" "*" \
+  fis:ListExperimentTemplates fis:ListExperiments fis:ListActions fis:GetAction
+
 echo
 echo "read-only helpers"
 simulate "describe / scout" "*" \
