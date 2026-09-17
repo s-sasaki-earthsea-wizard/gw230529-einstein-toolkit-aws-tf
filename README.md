@@ -449,9 +449,13 @@ of growth through inspiral and merger to a maximum of **4.4e-4 of the peak**.
 The two were never the same computation (480 ranks on 12 nodes against 192 on
 one), and the merger amplifies whatever they disagree on; that the difference
 still ends below 1e-3 is the result. Both files store the same 15.36 M
-cadence, so no interpolation enters the subtraction — and the thin line is
-solid on purpose: this figure spends dashes on guide lines, and dashes on 127
-samples break at the corners and read as gaps.
+cadence, so no interpolation enters the subtraction — and the reference is a
+line with this run's samples as open circles on it, rather than two lines:
+matched line weights merge into one curve, and a pale thick one under a thin
+dark one turns the reference into a halo, which reads as an error band. A
+marker can only be read as a second series, and drawing every stored sample
+makes the claim the strong one while showing the cadence the panel below is
+measured at.
 
 Two properties of the data are worth knowing before judging the figures:
 

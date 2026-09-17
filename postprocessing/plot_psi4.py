@@ -20,8 +20,10 @@ takes a double time integration this script deliberately does not attempt.
 
 When the published reference run's waveform is mounted (make fetch-inputs
 ARGS=--reference puts it under INPUTS_DIR), a second figure overlays the two
-and draws their difference underneath. Overlaid alone they are one line --
-which is the claim, but a claim the eye cannot check below a percent. The
+and draws their difference underneath. The reference is a line and this run
+is a marker on it, the oldest idiom there is for "the published curve, and
+our points on it" -- two curves of similar weight agree into a single line,
+and a pale one under a dark one only reads as a band around it. The
 lower panel is what turns it into a number: the two start at machine
 precision (same initial data), sit near 1e-14 while nothing has happened
 yet, and then drift apart through inspiral and merger by thirteen orders of
@@ -140,20 +142,36 @@ def plot_against_reference(t, re, im, ref, radius, us, outdir, stem):
         figsize=(FIGSIZE[0], FIGSIZE[1] * 1.5),
         gridspec_kw={"height_ratios": [2.2, 1], "hspace": 0.08},
     )
-    # A thick pale line underneath and a thin dark one on top: the claim is
-    # that the thin one never leaves the thick one, and that reads at a
-    # glance. Not dashed -- dashes on 127 samples break at the corners and
-    # look like gaps, and this figure already spends dashes on guide lines.
+    # Line for the reference, open circles for this run, one per stored
+    # sample. Two line weights cannot express agreement here: matched, they
+    # merge into one line; a pale thick one under a thin dark one turns the
+    # reference into a halo, and a halo reads as an error band. A marker is a
+    # discrete object, so it can only be read as a second series, and drawing
+    # every sample makes the claim the strong one -- every point this run
+    # stored lands on the published curve -- while showing the 15.36 M
+    # cadence the panel below is measured at. (Dashes were the other
+    # candidate and lost: on 127 samples they break at the corners and look
+    # like gaps, and this figure already spends dashes on guide lines.)
     top.plot(
         tt,
         rre * us.psi4,
         color=VERMILLION,
-        linewidth=3.4,
-        alpha=0.45,
-        solid_capstyle="round",
+        linewidth=2.0,
+        zorder=1,
         label="reference run (480 ranks, 12 nodes)",
     )
-    top.plot(tt, re * us.psi4, color=BLUE, linewidth=1.4, label="this run (192 ranks, 1 spot node)")
+    top.plot(
+        tt,
+        re * us.psi4,
+        linestyle="none",
+        marker="o",
+        markersize=3.4,
+        markerfacecolor="none",
+        markeredgecolor=BLUE,
+        markeredgewidth=1.0,
+        zorder=2,
+        label="this run (192 ranks, 1 spot node)",
+    )
     mark_peak(top, tpk, us, annotate=True)
     top.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
     top.set_ylabel(psi4_ylabel(radius, us, prefix=r"\mathrm{Re}\,"))
