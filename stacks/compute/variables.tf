@@ -334,3 +334,44 @@ variable "auto_shutdown" {
   type        = bool
   default     = true
 }
+
+variable "fis_enabled" {
+  description = <<-EOT
+    Whether the Fault Injection Service role and experiment template exist.
+
+    They are what makes a spot interruption something that can be aimed at a
+    moment rather than waited for, which is the whole of issue #24: the
+    handler's behaviour when a notice lands during a sync push, or during a
+    checkpoint write, has been reasoned about in comments and never observed.
+
+    Off by default. A production run should not carry a way to interrupt
+    itself, and the two resources cost nothing to leave behind once a series
+    of experiments is done -- so turning this on is a deliberate edit rather
+    than a default anyone inherits.
+
+    Firing one costs 0.10 USD per action-minute with a two minute minimum,
+    plus whatever the node itself bills.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "aws_max_retries" {
+  description = <<-EOT
+    How many times the AWS SDK attempts a call before the provider gives up.
+
+    The default is the provider's own. It matters here for one call only:
+    RunInstances against a pool with no capacity returns
+    InsufficientInstanceCapacity, which is classed as a server error and so
+    is retried like any 500, with a backoff capped at 300 seconds. Twenty
+    five attempts is therefore close to an hour of waiting on one pool.
+
+    scripts/launch_with_ladder.sh passes a small value so that a rung fails
+    quickly and the next (zone, instance type) pair is tried, then cycles the
+    whole ladder. Do not set it low for an ordinary apply: it applies to
+    every API call the provider makes, including the throttling retries that
+    keep a large plan from failing on RequestLimitExceeded.
+  EOT
+  type        = number
+  default     = 25
+}

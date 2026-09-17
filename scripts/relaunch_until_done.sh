@@ -7,12 +7,15 @@
 # when the node was reclaimed twice in one evening and every relaunch needed
 # a human holding an MFA device.
 #
-# The loop relaunches the SAME configuration -- region, zone, instance type
-# all come from stacks/compute/terraform.tfvars -- and lets terraform's own
-# create-retry ride out InsufficientInstanceCapacity, which was measured to
-# behave as a free capacity poll (nothing is created and nothing bills until
-# the pool has an instance to give). Changing what to launch is tfvars
-# business, not this script's.
+# Relaunching goes through scripts/launch_with_ladder.sh, so a pool that has
+# gone dry moves the launch to the next (zone, instance type) rung instead of
+# blocking on one until a human edits tfvars (#22). With no LAUNCH_LADDER set
+# that is a single apply with the tfvars settings, which is what this loop
+# did before the ladder existed.
+#
+# The ladder also owns the waiting. InsufficientInstanceCapacity is retried
+# inside the SDK rather than by this script, which is why a dry pool used to
+# look like a hung apply here.
 #
 # This doubles as the measurement Syota actually wants: with the human out of
 # the relaunch path, `make ledger`'s duty cycle measures what spot supply is
@@ -77,15 +80,25 @@ while :; do
     exit 4
   fi
 
-  say "launch ${launches}/${MAX_LAUNCHES}: terraform apply (blocks while the pool is dry)"
-  if ! ${TF} -chdir=stacks/compute apply -input=false -auto-approve -var run_enabled=true; then
+  say "launch ${launches}/${MAX_LAUNCHES}: walking the capacity ladder"
+  launch_rc=0
+  scripts/launch_with_ladder.sh || launch_rc=$?
+  if [ "${launch_rc}" -ne 0 ]; then
     if ! session_alive; then
-      say "apply failed and the session is gone -- restart after the next make login"
+      say "the launch failed and the session is gone -- restart after the next make login"
       exit 3
     fi
-    say "apply failed with a live session -- pausing 5 minutes before retrying"
+    # The ladder distinguishes "no pool had capacity" from "something is
+    # wrong". Only the first is worth waiting out: a quota or an unrecognised
+    # failure would repeat identically, and this loop retrying it every five
+    # minutes is how an unattended script turns one problem into a hundred.
+    case "${launch_rc}" in
+      6) say "the whole ladder declined -- pausing 5 minutes before walking it again" ;;
+      *) say "the ladder stopped (exit ${launch_rc}); its explanation is above. Not retrying."
+         exit "${launch_rc}" ;;
+    esac
     sleep 300
-    launches=$((launches - 1))   # a failed apply launched nothing
+    launches=$((launches - 1))   # a failed launch launched nothing
     continue
   fi
 

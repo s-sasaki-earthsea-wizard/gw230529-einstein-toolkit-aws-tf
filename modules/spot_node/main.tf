@@ -19,6 +19,52 @@ data "aws_ssm_parameter" "al2023" {
 
 data "aws_region" "current" {}
 
+# The bootstrap script, rendered and stripped.
+#
+# Ship the script, not its reasoning. EC2 caps user data at 16 KB in raw form
+# -- which, for base64gzip, is the gzipped bytes and not the base64 string.
+# The template is 48 KB, and nearly all of that is the comments recording why
+# the sidecar behaves the way it does. Those comments are the point of the
+# file and CLAUDE.md requires them, so they cannot be deleted to buy room.
+#
+# They do not have to be uploaded, though. Stripping whole-line comments at
+# render time takes the payload from 17.2 KB gzipped, which is over the cap,
+# to 5.0 KB, and leaves the repository copy untouched. Measured 2026-09-16:
+# before the strip the margin was 1.4 KB, so the next comment block anyone
+# added would have failed a launch with an EC2 error naming neither the cause
+# nor the file.
+#
+# The negated class is what keeps shebangs -- `#!` must survive in all four
+# generated scripts. What the node loses is the annotation on
+# /usr/local/bin/gw230529-* when read over SSM; the annotated original is this
+# repository's copy.
+#
+# cloud-init decompresses gzipped user data before running it, so the node
+# sees the same script either way.
+locals {
+  user_data_rendered = replace(templatefile(var.user_data_template, {
+    aws_region            = data.aws_region.current.region
+    run_mode              = var.run_config.run_mode
+    ecr_repository_url    = var.run_config.ecr_repository_url
+    image_tag             = var.run_config.image_tag
+    data_bucket           = var.run_config.data_bucket
+    inputs_prefix         = var.run_config.inputs_prefix
+    run_name              = var.run_config.run_name
+    parfile               = var.run_config.parfile
+    mpi_procs             = var.run_config.mpi_procs
+    omp_threads           = var.run_config.omp_threads
+    rehearsal_payload_gb  = var.run_config.rehearsal_payload_gb
+    rehearsal_generations = var.run_config.rehearsal_generations
+
+    checkpoint_generations_kept = var.run_config.checkpoint_generations_kept
+
+    sync_interval_minutes = var.run_config.sync_interval_minutes
+    auto_shutdown         = var.run_config.auto_shutdown
+  }), "/(?m)^[ \t]*#(?:[^!\n][^\n]*)?$\n/", "")
+
+  user_data_encoded = base64gzip(local.user_data_rendered)
+}
+
 resource "aws_launch_template" "node" {
   name        = "${var.name_prefix}-node"
   description = "GW230529 Einstein Toolkit spot compute node"
@@ -72,30 +118,7 @@ resource "aws_launch_template" "node" {
 
   instance_initiated_shutdown_behavior = "terminate"
 
-  # gzip, not plain base64. EC2 caps user data at 16 KB and this script is
-  # 17.5 KB rendered -- most of it the comments that record why the sidecar
-  # behaves the way it does, which is exactly what should not be deleted to
-  # save bytes. cloud-init decompresses gzipped user data before running it,
-  # so the node sees the same script. 8.8 KB encoded leaves 47% headroom.
-  user_data = base64gzip(templatefile(var.user_data_template, {
-    aws_region            = data.aws_region.current.region
-    run_mode              = var.run_config.run_mode
-    ecr_repository_url    = var.run_config.ecr_repository_url
-    image_tag             = var.run_config.image_tag
-    data_bucket           = var.run_config.data_bucket
-    inputs_prefix         = var.run_config.inputs_prefix
-    run_name              = var.run_config.run_name
-    parfile               = var.run_config.parfile
-    mpi_procs             = var.run_config.mpi_procs
-    omp_threads           = var.run_config.omp_threads
-    rehearsal_payload_gb  = var.run_config.rehearsal_payload_gb
-    rehearsal_generations = var.run_config.rehearsal_generations
-
-    checkpoint_generations_kept = var.run_config.checkpoint_generations_kept
-
-    sync_interval_minutes = var.run_config.sync_interval_minutes
-    auto_shutdown         = var.run_config.auto_shutdown
-  }))
+  user_data = local.user_data_encoded
 
   tag_specifications {
     resource_type = "instance"
@@ -114,6 +137,20 @@ resource "aws_launch_template" "node" {
   }
 
   update_default_version = true
+
+  # Fail at plan time, not at launch.
+  #
+  # Exceeding the cap surfaces from EC2 as "User data is limited to 16384
+  # bytes" against a launch template, which names neither the template file
+  # nor the comment block that pushed it over -- and it surfaces only once
+  # billing has been authorised. The base64 string is 4/3 of the raw bytes
+  # the limit applies to, so 21845 characters is the same 16 KB.
+  lifecycle {
+    precondition {
+      condition     = length(local.user_data_encoded) <= 21845
+      error_message = "Rendered user data exceeds the EC2 16 KB limit. Trim templates/user_data.sh.tftpl, or move a sidecar out of it."
+    }
+  }
 }
 
 resource "aws_instance" "node" {

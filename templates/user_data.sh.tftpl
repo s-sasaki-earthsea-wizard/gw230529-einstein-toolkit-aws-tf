@@ -150,7 +150,25 @@ IMDS_TOKEN="$(curl -sX PUT http://169.254.169.254/latest/api/token \
   -H "X-aws-ec2-metadata-token-ttl-seconds: 60")"
 INSTANCE_ID="$(curl -sH "X-aws-ec2-metadata-token: $${IMDS_TOKEN}" \
   http://169.254.169.254/latest/meta-data/instance-id)"
+
+# What this node actually is, recorded because nothing else records it.
+#
+# The instance type and zone are chosen by Terraform, but a node reclaimed by
+# EC2 is forgotten by the API within the hour, so after the fact neither
+# `describe-instances` nor the launch template (whose default version moves)
+# can say what a given node was. `make ledger-chart` had to infer the type
+# from the "NNN GiB available" line the NUMA fix prints -- which happens to
+# separate 384 GiB from 768 GiB cleanly, and happens to be all there was.
+#
+# One line, at a fixed place in a log that is pushed to S3 on every tick.
+# Issue #22 wants this too: a capacity ladder that walks (zone x type) has to
+# be auditable afterwards, and "what did rung 3 actually get" is this line.
+INSTANCE_TYPE="$(curl -sH "X-aws-ec2-metadata-token: $${IMDS_TOKEN}" \
+  http://169.254.169.254/latest/meta-data/instance-type)"
+INSTANCE_AZ="$(curl -sH "X-aws-ec2-metadata-token: $${IMDS_TOKEN}" \
+  http://169.254.169.254/latest/meta-data/placement/availability-zone)"
 echo "instance id $${INSTANCE_ID}"
+echo "node facts: instance_type=$${INSTANCE_TYPE} availability_zone=$${INSTANCE_AZ}"
 
 # ------------------------------------------------------------------
 # 2. Pull the Einstein Toolkit image from ECR
@@ -432,10 +450,33 @@ exec > >(tee -a "\$${TICK_LOG}") 2>&1
 # untouched on the final call instead of arriving wearing two timestamps.
 say() { printf '[%s] %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\$*"; }
 
+# What this tick did, in a machine readable form that can outlive the node.
+#
+# The spot flush is the one caller whose own log lines never reach S3: it
+# prints "tick start", syncs output/ (which is what carries this log up), and
+# everything it prints after that dies with the instance two minutes later.
+# Correlating the 2026-08-29 production log against the ended markers found
+# four interruptions where a tick had just taken the lock, and not one where
+# the flush's own wait could be read -- which is why issue #24 item 1 says
+# the question has been reasoned about and never measured.
+#
+# So the flush is given something small enough to upload afterwards. The
+# caller picks the path, so a timer tick starting in the same second cannot
+# overwrite the report the flush is about to read.
+REPORT="\$${GW_SYNC_REPORT:-/var/lib/gw230529/last-sync.json}"
+LOCK_WAIT=0
+PUSHED=no
+
 # SECONDS is elapsed time since this shell started, so every figure below is
 # measured from the start of the tick.
 say "tick start"
-trap 'say "tick end after \$${SECONDS}s"' EXIT
+report() {
+  mkdir -p "\$(dirname "\$${REPORT}")"
+  printf '{"elapsed_s":%s,"lock_wait_s":%s,"pushed_checkpoints":"%s"}' \
+    "\$${SECONDS}" "\$${LOCK_WAIT}" "\$${PUSHED}" > "\$${REPORT}" || true
+  say "tick end after \$${SECONDS}s"
+}
+trap report EXIT
 
 # One sync at a time, however each was started (#15). systemd keeps the timer
 # from overlapping itself, but section 8 and the spot watcher call this
@@ -448,7 +489,8 @@ exec 9>>/var/lock/gw230529-sync.lock
 if ! flock -n 9; then
   say "waiting for the lock held by another sync"
   flock 9
-  say "lock acquired after \$${SECONDS}s"
+  LOCK_WAIT=\$${SECONDS}
+  say "lock acquired after \$${LOCK_WAIT}s"
 fi
 
 # --stamp-only: record the restored set as already synced, and push nothing.
@@ -581,6 +623,7 @@ aws s3 sync "\$${CKPT_DIR}/" "\$${S3_CKPT}/\$${target}/" --delete --only-show-er
 
 # Only now is the slot known good.
 printf '%s' "\$${target}" | aws s3 cp - "\$${S3_CKPT}/CURRENT" --only-show-errors
+PUSHED=yes
 say "CURRENT is now \$${target}"
 # Recompute rather than reuse the signature taken above: pruning changed the
 # directory, and stamping the pre-prune set would leave the next tick seeing a
@@ -666,15 +709,34 @@ UNIT
 # ------------------------------------------------------------------
 # 6. Sidecar: spot interruption watcher
 #
-# The warning gives roughly two minutes. A fresh 78 GB checkpoint can be
-# neither written nor uploaded in that window, so the handler only flushes
-# what is already on disk -- it must not ask Cactus for a new checkpoint.
+# The warning gives roughly two minutes, and what fits inside it is output
+# and logs. NOT a checkpoint -- not a fresh one, and not even a complete
+# generation already sitting on the volume.
 #
-# It runs the ordinary sync, which means it inherits the same refusal to
-# upload a checkpoint set that is still being written. If Cactus happens to be
-# mid-checkpoint when the notice arrives, the run falls back to the previous
-# complete generation. Losing an hour of evolution beats restoring from a torn
-# checkpoint and discovering it hours later.
+# That second half was assumed rather than measured until the production log
+# was read back on 2026-09-16. A push uploads both retained generations,
+# because the alternating slot target is always the one written two rotations
+# ago and holds neither of the current pair; 63 pushes of that 171 GB
+# measured min 241 s, median 276 s, max 344 s. Fitting it into 120 s would
+# need 1.4 GB/s from a volume provisioned for 1.0, so the arithmetic settles
+# it -- and even a single generation at 85.7 GB would need 714 MB/s against
+# the 620 MB/s those pushes actually achieved.
+#
+# This is not harmful, and the ordering is why. The sync pushes output and
+# logs first, so the useful work completes; CURRENT is written only after a
+# push finishes, so a half-uploaded slot is never restored from; and that
+# half-uploaded slot is by construction the one CURRENT does not name, which
+# the next tick's --delete cleans. The cost of the attempt is some S3 PUT
+# charges. What it must not do is create the impression that an interrupted
+# run can bank its last generation: it cannot, and the recovery point is the
+# last checkpoint that finished uploading on an ordinary tick.
+#
+# The handler must also never ask Cactus for a new checkpoint. It runs the
+# ordinary sync, inheriting the same refusal to upload a set that is still
+# being written -- so if Cactus is mid-checkpoint when the notice arrives,
+# the run falls back to the previous complete generation. Losing half an hour
+# of evolution beats restoring from a torn checkpoint and finding out hours
+# later.
 # ------------------------------------------------------------------
 cat > /usr/local/bin/gw230529-spot-watch <<WATCH
 #!/usr/bin/env bash
@@ -688,6 +750,19 @@ while true; do
     http://169.254.169.254/latest/meta-data/spot/instance-action)
   if [ "\$${CODE}" = "200" ]; then
     logger -t gw230529 "spot interruption notice received, flushing to S3"
+
+    # What the notice itself said, captured before anything can overwrite it.
+    #
+    # The document carries the action ("terminate", "stop", "hibernate") and
+    # the time EC2 intends to act. That time is the only trustworthy zero for
+    # the detection latency this watcher's five second poll costs, and it is
+    # what separates a summoned notice (#24) from a real reclaim without
+    # leaving the bucket to go and ask EC2.
+    notice=\$(curl -sH "X-aws-ec2-metadata-token: \$${TOKEN}" \
+      http://169.254.169.254/latest/meta-data/spot/instance-action || true)
+    notice_action=\$(printf '%s' "\$${notice}" | jq -r '.action // ""' 2>/dev/null || true)
+    notice_time=\$(printf '%s' "\$${notice}" | jq -r '.time // ""' 2>/dev/null || true)
+
     # The end marker goes FIRST, before the flush.
     #
     # It is what turns logs/<run_name>/ into a ledger: every node leaves a
@@ -703,10 +778,34 @@ while true; do
     #
     # Never fatal: a failed marker must not cost the flush.
     info=\$(grep -E '\| *[0-9]+\.[0-9]+ *\|' "$${CACTUS_LOG}" 2>/dev/null | tail -1 || true)
-    printf '{"instance_id":"%s","ended":"%s","reason":"spot-interruption","last_info_line":"%s"}' \
-      "$${INSTANCE_ID}" "\$(date -Is)" "\$(printf '%s' "\$${info}" | tr -d '\\"')" \
+    printf '{"instance_id":"%s","ended":"%s","reason":"spot-interruption","notice_action":"%s","notice_time":"%s","last_info_line":"%s"}' \
+      "$${INSTANCE_ID}" "\$(date -Is)" "\$${notice_action}" "\$${notice_time}" \
+      "\$(printf '%s' "\$${info}" | tr -d '\\"')" \
       | aws s3 cp - "$${S3_LOGS}/ended-$${INSTANCE_ID}.json" --only-show-errors || true
+
+    # The flush, and then the record that the flush returned.
+    #
+    # Two minutes cannot bank a checkpoint and never could. A push moves both
+    # retained generations to the opposite slot -- the alternating target
+    # never already holds either of them -- which is 171 GB at the production
+    # resolution, and 63 production pushes measured a median of 276 seconds
+    # against a 120 second notice. What this call reliably buys is output and
+    # logs, which the sync pushes before it looks at checkpoints at all.
+    #
+    # flushed-<instance>.json is written only if the sync returns, so its
+    # ABSENCE is an answer rather than a gap: the node was cut off mid-flush.
+    # GW_SYNC_REPORT keeps the sync's own figures -- how long it waited for
+    # the lock, whether it managed a checkpoint push -- in a path a timer tick
+    # starting in the same second cannot overwrite.
+    flush_start=\$(date +%s)
+    export GW_SYNC_REPORT=/var/lib/gw230529/flush-sync.json
+    rm -f "\$${GW_SYNC_REPORT}"
     /usr/local/bin/gw230529-sync || true
+    flush_elapsed=\$(( \$(date +%s) - flush_start ))
+    sync_report=\$(cat "\$${GW_SYNC_REPORT}" 2>/dev/null || echo null)
+    printf '{"instance_id":"%s","flushed":"%s","flush_elapsed_s":%s,"sync":%s}' \
+      "$${INSTANCE_ID}" "\$(date -Is)" "\$${flush_elapsed}" "\$${sync_report}" \
+      | aws s3 cp - "$${S3_LOGS}/flushed-$${INSTANCE_ID}.json" --only-show-errors || true
     break
   fi
   sleep 5
@@ -764,7 +863,25 @@ if [ "$${RUN_MODE}" = "ops-rehearsal" ]; then
   # should not also have to remember to change this.
   gen_wait=$(( SYNC_INTERVAL_MIN * 60 + 60 ))
 
-  for generation in $(seq 1 "$${REHEARSAL_GENERATIONS}"); do
+  # Continue numbering from whatever the restore brought down.
+  #
+  # Starting at it_1 every time makes a rehearsal unable to follow itself. A
+  # second node under the same run_name restores the slot CURRENT names,
+  # finds it_1..it_N already there, and then writes it_1 again -- so the new
+  # generation sorts oldest, the pruning deletes what was just written, and
+  # the slot rotation is exercised against a set that never advances.
+  #
+  # Issue #24 fires several interruptions in sequence at one run_name, and
+  # each shot's restore is what proves the previous shot's outcome. That only
+  # works if the generations form one increasing series across nodes, the way
+  # Cactus's iteration numbers do.
+  gen_base=$(find "$${WORK_DIR}/checkpoints" -maxdepth 1 -name '*.h5' -printf '%f\n' 2>/dev/null \
+    | grep -oE 'it_[0-9]+' | sed 's/^it_//' | sort -n | tail -1 || true)
+  : "$${gen_base:=0}"
+  echo "ops-rehearsal: writing generations $(( gen_base + 1 )) to $(( gen_base + REHEARSAL_GENERATIONS ))"
+
+  for offset in $(seq 1 "$${REHEARSAL_GENERATIONS}"); do
+    generation=$(( gen_base + offset ))
     echo "rehearsal generation $${generation}: $${MPI_PROCS} files x $${per_file_mb} MB"
 
     # No rm. Cactus leaves the previous generation in place, and accumulation

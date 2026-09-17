@@ -183,6 +183,31 @@ data "aws_iam_policy_document" "observer" {
   }
 
   # CloudWatch has no resource level permissions for metric reads at all.
+  # Spot capacity, forward looking.
+  #
+  # Both are reads and neither can be scoped -- they are account-wide queries
+  # with no resource to name -- so they cost the observer role nothing it did
+  # not already concede. What they buy is the hourly sampler in
+  # scripts/sample_placement_scores.sh being able to run from cron: placement
+  # scores have no history and no archive to ask for one, so the series only
+  # exists if something records it, and that something cannot hold an MFA
+  # session. Issue #22.
+  #
+  # GetSpotPlacementScores is free to call. DescribeSpotPriceHistory is here
+  # so that make region-scout also works without the operator, since choosing
+  # a pool is a watcher's question rather than a change to anything.
+  statement {
+    sid    = "ReadSpotCapacity"
+    effect = "Allow"
+    actions = [
+      "ec2:GetSpotPlacementScores",
+      "ec2:DescribeSpotPriceHistory",
+      "ec2:DescribeAvailabilityZones",
+      "ec2:DescribeInstanceTypeOfferings",
+    ]
+    resources = ["*"]
+  }
+
   statement {
     sid    = "ReadMetrics"
     effect = "Allow"
