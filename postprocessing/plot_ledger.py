@@ -47,7 +47,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from matplotlib.ticker import FuncFormatter
 
-from common import BLUE, GREEN, VERMILLION, apply_style, save
+from common import BLUE, GREEN, M_SUN_SECONDS, VERMILLION, apply_style, save
 
 # us-west-2 was on PDT for the whole of August 2026, so a fixed offset is
 # exact here and spares the image a tz database.
@@ -69,10 +69,10 @@ BUSINESS_HOURS = (8, 17)
 # threshold is unambiguous rather than a guess.
 FAMILY_BY_MEMORY = ((500, "c7a"), (10**9, "m7a"))
 
-# Geometric units to SI. Cactus measures time in solar masses, which reads as
-# nothing at all outside numerical relativity, so the figure states
-# milliseconds: 1 M_sun = G M_sun / c^3 = 4.9254909 microseconds.
-M_SUN_MICROSECONDS = 4.9254909
+# Cactus measures time in solar masses, which reads as nothing at all outside
+# numerical relativity, so the figure states milliseconds. The factor lives in
+# common.py, which every figure now shares: a physical constant defined twice
+# in one package is a discrepancy waiting to be found in a printed slide.
 FINAL_TIME_M = 1750.02  # where the run stopped, per Cactus::cctk_final_time
 
 GREY = "#6E6E78"
@@ -302,7 +302,7 @@ def draw(nodes, run, outdir):
     finisher = next((n for n in served if n.reason == "finished"), None)
     if finisher is not None:
         ax.annotate(
-            f"finished · {FINAL_TIME_M * M_SUN_MICROSECONDS / 1000:.2f} ms simulated",
+            f"finished · {FINAL_TIME_M * M_SUN_SECONDS * 1e3:.2f} ms simulated",
             xy=(X(finisher.ended), served.index(finisher)),
             xytext=(9, 0),
             textcoords="offset points",
