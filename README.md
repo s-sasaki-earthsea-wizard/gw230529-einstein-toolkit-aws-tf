@@ -123,9 +123,11 @@ templates/
   user_data.sh.tftpl   Node bootstrap: pull image, restore state, sync, self-terminate
 postprocessing/
   Dockerfile           Pinned render environment: kuibit, matplotlib, ffmpeg
+  common.py            Palette, unit systems, and the ASCII readers that deduplicate
   plot_psi4.py         Psi4 (2,2) waveform at the outermost extraction radius
   plot_timeseries.py   Max density, horizon masses, rest mass on the grid
   render_frames.py     Density frames on the orbital plane, movie, 3-panel snapshot
+  plot_ledger.py       Node timeline: which spot node held the run, and what it banked
 scripts/
   fetch_inputs.sh      Download the gallery artefacts, checksum pinned
   upload_inputs.sh     Derive the cloud parfile, check it, upload it
@@ -417,6 +419,24 @@ make ledger-chart AWS_PROFILE=gw230529-observer    # node timeline, from the run
 
 Outputs land in `postprocessing/out/<run_name>/`; commit the chosen ones to
 the talk repository, not here.
+
+**Every figure is drawn twice, in geometric units and in SI**, and the SI
+files carry an `_si` suffix. Cactus works in `G = c = M_sun = 1`, which is
+what the Einstein Toolkit gallery prints and what makes this run comparable
+to the reference one; it is also unreadable outside numerical relativity,
+where 1750 M is 8.62 ms, 500 M is 738 km and a rest-mass density of
+1.3e-3 is 7.8e14 g/cm³ — a number that places the star against nuclear
+saturation density for an audience that has never met a solar mass to the
+minus two. `UNITS="geom si"` selects which sets are drawn; narrowing it to
+one halves `make movie`, the only target here where the second pass costs
+more than seconds.
+
+The conversion factors live in `postprocessing/common.py` and come from the
+IAU nominal `GM_sun`, not from kuibit's `unitconv`, which spends precision
+round-tripping through a mass and a `G`. One quantity resists the
+translation: Ψ4 is `s^-2` in SI and the figure says so, but what a
+non-specialist actually recognises is the strain `h`, and recovering that
+takes a double time integration these scripts deliberately do not attempt.
 
 Two properties of the data are worth knowing before judging the figures:
 

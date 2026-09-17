@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026 Syota Sasaki
-"""Shared style and data-loading helpers for the post-processing figures.
+"""Shared style, unit systems and data loading for the post-processing figures.
 
 Every script here reads from the synced run directory (``make fetch-results``)
 and writes into an output directory; both arrive as CLI arguments with
@@ -26,6 +26,111 @@ MERGER_TIME = 713.0
 
 FIGSIZE = (7.0, 4.2)
 
+# ----------------------------------------------------------------------
+# Unit systems
+# ----------------------------------------------------------------------
+# Cactus works in geometric units with G = c = M_sun = 1, which reads as
+# nothing at all outside numerical relativity. Every figure is therefore
+# drawn twice: once as the simulation stores it, once in the units the
+# talk's audience already thinks in.
+#
+# The factors come from the IAU nominal solar mass parameter GM_sun rather
+# than from kuibit's unitconv. kuibit divides GM_sun by G to recover a mass
+# and multiplies it back, which spends precision on the one constant that is
+# actually well determined; the two agree to 2.5e-5, far below anything a
+# figure can show, but the time factor below is the value plot_ledger.py and
+# the abstract already quote.
+GM_SUN_SI = 1.32712440018e20  # m^3 s^-2, IAU 2015 nominal
+C_SI = 2.99792458e8  # m/s, exact by definition
+G_SI = 6.67430e-11  # m^3 kg^-1 s^-2, CODATA 2018
+
+M_SUN_SECONDS = GM_SUN_SI / C_SI**3  # 4.9254909 us
+M_SUN_METRES = GM_SUN_SI / C_SI**2  # 1476.625 m
+M_SUN_KG = GM_SUN_SI / G_SI  # 1.98841e30 kg
+# Geometric density is M_sun / (GM_sun/c^2)^3 = c^6 / (G (GM_sun)^2). The
+# trailing 1e-3 turns kg/m^3 into the g/cm^3 that compact-object work quotes.
+M_SUN_G_PER_CM3 = C_SI**6 / (G_SI * GM_SUN_SI**2) * 1e-3  # 6.1758e17
+
+
+class UnitSystem:
+    """Factors and axis labels for one way of presenting the data.
+
+    Each factor multiplies a value the simulation stored in geometric units.
+    Psi4 scales by time rather than by length: G = c = 1 makes the two the
+    same in the code, but Psi4 is the second time derivative of a
+    dimensionless strain, so its SI dimension is s^-2 and not m^-2.
+    """
+
+    def __init__(self, name, suffix, time, length, density, mass, psi4):
+        self.name = name
+        self.suffix = suffix
+        self.time, self.time_unit = time
+        self.length, self.length_unit = length
+        self.density, self.density_unit = density
+        self.mass, self.mass_unit = mass
+        self.psi4, self.psi4_unit = psi4
+
+    def label(self, symbol, unit):
+        """An axis label in math mode: symbol, then its unit in brackets."""
+        return rf"${symbol}\ [{unit}]$"
+
+
+GEOMETRIC = UnitSystem(
+    name="geom",
+    suffix="",
+    time=(1.0, r"M_\odot"),
+    length=(1.0, r"M_\odot"),
+    density=(1.0, r"M_\odot^{-2}"),
+    mass=(1.0, r"M_\odot"),
+    psi4=(1.0, r"M_\odot^{-2}"),
+)
+
+SI = UnitSystem(
+    name="si",
+    suffix="_si",
+    time=(M_SUN_SECONDS * 1e3, r"\mathrm{ms}"),
+    length=(M_SUN_METRES / 1e3, r"\mathrm{km}"),
+    density=(M_SUN_G_PER_CM3, r"\mathrm{g\,cm^{-3}}"),
+    # Kilograms, not solar masses: a mass is the one quantity here that has a
+    # readable non-SI unit, but mixing it into an otherwise SI figure invites
+    # the reader to assume the other axes are astronomers' units too.
+    mass=(M_SUN_KG / 1e30, r"10^{30}\,\mathrm{kg}"),
+    psi4=(M_SUN_SECONDS**-2, r"\mathrm{s^{-2}}"),
+)
+
+UNIT_SYSTEMS = {u.name: u for u in (GEOMETRIC, SI)}
+
+
+def fmt_value(v):
+    """Round a number for an annotation, keeping about three figures.
+
+    The same quantity is a four-digit count of solar masses and a one-digit
+    count of milliseconds, so the number of decimals cannot be fixed per
+    call site -- it follows the magnitude instead.
+    """
+    return f"{v:.0f}" if abs(v) >= 100 else f"{v:.2f}"
+
+
+def value_formatter(reference):
+    """Fix the decimal count for a whole series from its largest value.
+
+    fmt_value decides per number, which is right for a lone annotation and
+    wrong for a set that gets read side by side: choosing individually gives
+    a three-panel figure captioned "0.00", "737", "1720".
+    """
+    decimals = 0 if abs(reference) >= 100 else 2
+    return lambda v: f"{v:.{decimals}f}"
+
+
+def add_units_argument(parser):
+    """Give a script the --units flag, so all of them spell it the same way."""
+    parser.add_argument(
+        "--units",
+        default="geom",
+        choices=sorted(UNIT_SYSTEMS),
+        help="geometric units as Cactus stores them, or SI for the talk",
+    )
+
 
 def apply_style():
     """Talk-oriented matplotlib defaults: big fonts, recessive grid."""
@@ -46,6 +151,9 @@ def apply_style():
             "axes.spines.right": False,
             "savefig.dpi": 300,
             "savefig.bbox": "tight",
+            # Type 3 is the matplotlib default and degrades when a slide
+            # scales it up; 42 embeds TrueType. Same choice as plot_ledger.py.
+            "pdf.fonttype": 42,
         }
     )
 
