@@ -451,10 +451,12 @@ one), and the merger amplifies whatever they disagree on; that the difference
 still ends below 1e-3 is the result. Both files store the same 15.36 M
 cadence, so no interpolation enters the subtraction.
 
-The shaded bands are the twelve spot interruptions, placed on the simulation
-clock: each one runs from the checkpoint the next node resumed at (dotted
-edge) to the time the lost node had reached (dashed edge), so the band is
-work that was computed twice — 168 M_sun of the 1750, 9.6%. They are read
+The grey verticals are the twelve spot interruptions, placed on the
+simulation clock: a dashed line where a node was lost and a dotted one where
+the next resumed, the gap between them being work that had to be computed
+twice — 168 M_sun of the 1750, 9.6%. Lines rather than shaded spans, which
+put a fill under the data across a quarter of the axis for a figure that is
+about a waveform. They are read
 from the Cactus log rather than the ledger, because the log travels with the
 run data the figure already needs and an iteration counter that steps
 backwards is exactly one recovery; the twelve agree with `make ledger-chart`.

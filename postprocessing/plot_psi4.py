@@ -44,7 +44,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
 
 from common import (
     BLUE,
@@ -137,18 +137,18 @@ def load_interruptions(datadir):
     ]
 
 
-def mark_interruptions(ax, events, us):
-    """Shade each recomputed interval and dash its two edges.
+# How each end of an interruption is drawn. Lines only, no shading between
+# them: a fill sits under the data across a quarter of the axis, and this
+# figure is about a waveform, not about the reclaims.
+LOST_STYLE = {"color": "0.45", "linewidth": 0.9, "linestyle": "--"}
+RESUME_STYLE = {"color": "0.65", "linewidth": 0.9, "linestyle": (0, (1, 2))}
 
-    The spans are drawn translucent and left to overlap: where the run was
-    reclaimed several times before clearing a stretch, that stretch was
-    computed as many times over, and the accumulating shade says so without
-    anyone having to count lines.
-    """
+
+def mark_interruptions(ax, events, us):
+    """Dash where a node was lost, dot where the next one resumed."""
     for t_resume, t_lost in events:
-        ax.axvspan(t_resume * us.time, t_lost * us.time, color="0.55", alpha=0.13, linewidth=0)
-        ax.axvline(t_lost * us.time, color="0.45", linewidth=0.9, linestyle="--", zorder=0)
-        ax.axvline(t_resume * us.time, color="0.65", linewidth=0.9, linestyle=(0, (1, 2)), zorder=0)
+        ax.axvline(t_lost * us.time, zorder=0, **LOST_STYLE)
+        ax.axvline(t_resume * us.time, zorder=0, **RESUME_STYLE)
 
 
 def align_reference(t, ref):
@@ -235,12 +235,11 @@ def plot_against_reference(t, re, im, ref, events, radius, us, outdir, stem):
         # rather than twelve series. The patch shows the shade the reader
         # has to recognise; the label says which edge is which.
         recomputed = sum(t_lost - t_resume for t_resume, t_lost in events) * us.time
-        # The proxy is drawn heavier than the spans themselves: at the
-        # alpha that keeps twelve overlapping bands from swamping the data,
-        # a legend swatch this small is invisible.
-        handles.append(Patch(facecolor="0.55", alpha=0.45, edgecolor="0.45", linestyle="--"))
+        # Wrapped, because on one line this entry reaches past the merger
+        # and sits on the waveform it is meant to annotate.
+        handles.append(Line2D([], [], **LOST_STYLE))
         labels.append(
-            f"{len(events)} spot interruptions: lost (dashed), resumed (dotted), "
+            f"{len(events)} spot interruptions:\nlost (dashed), resumed (dotted)\n"
             rf"${fmt_value(recomputed)}\,{us.time_unit}$ recomputed"
         )
     top.legend(handles, labels, loc="upper left", frameon=False)
