@@ -466,6 +466,15 @@ shows no step at any of the twelve** — recovery put the run back where it
 left off, and the only thing that grows is the ordinary divergence of two
 different rank decompositions.
 
+`make figures` also writes the numbers beside each figure, one pair per unit
+system: `psi4_vs_reference_*.tsv` carries a row per sample (time, both runs'
+real and imaginary parts, and the relative difference) and
+`psi4_interruptions*.tsv` the twelve events with their iteration numbers, so
+a row can be checked against `make ledger`. Tab separated with a `#`
+preamble and units in the column names — a talk quotes values, and reading
+them back off a PDF by eye is how a slide ends up disagreeing with the
+figure beside it.
+
 The reference is a
 line with this run's samples as open circles on it, rather than two lines:
 matched line weights merge into one curve, and a pale thick one under a thin
