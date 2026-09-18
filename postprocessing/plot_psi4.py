@@ -36,6 +36,7 @@ involves no interpolation at all.
 
 import argparse
 import os
+import re
 
 import h5py
 import matplotlib
@@ -43,6 +44,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Patch
 
 from common import (
     BLUE,
@@ -100,6 +102,55 @@ def plot_waveform(t, re, im, radius, us, outdir, stem):
     save(fig, outdir, stem)
 
 
+# A Cactus info line: "[<iso>]   <iteration>   <cctk_time> | ..."
+INFO_LINE = re.compile(r"^\[(\S+)\]\s+(\d+)\s+([0-9.]+)\s+\|")
+
+
+def load_interruptions(datadir):
+    """Find where the run lost a node, in simulation time.
+
+    A spot reclaim leaves no marker in the Cactus log -- the process simply
+    stops mid-line. What it does leave is the next node's recovery: the
+    iteration counter jumps backwards to the last banked checkpoint. Every
+    backward step in the log is therefore one interruption, and the pair it
+    yields is (the time the run had reached, the time it restarted from).
+    The gap between them is work that had to be computed twice.
+
+    Read from the log rather than from the ledger, which says the same thing:
+    the log travels with the run data this figure already needs, while the
+    ledger is rebuilt from S3 and would put an AWS session in the way of a
+    figure. Checked against `make ledger-chart` output: same twelve events.
+    """
+    path = f"{datadir}/cactus-stdout.log"
+    if not os.path.exists(path):
+        return []
+    seen = []
+    with open(path, errors="replace") as f:
+        for line in f:
+            m = INFO_LINE.match(line)
+            if m:
+                seen.append((int(m.group(2)), float(m.group(3))))
+    return [
+        (seen[i + 1][1], seen[i][1])
+        for i in range(len(seen) - 1)
+        if seen[i + 1][0] < seen[i][0]
+    ]
+
+
+def mark_interruptions(ax, events, us):
+    """Shade each recomputed interval and dash its two edges.
+
+    The spans are drawn translucent and left to overlap: where the run was
+    reclaimed several times before clearing a stretch, that stretch was
+    computed as many times over, and the accumulating shade says so without
+    anyone having to count lines.
+    """
+    for t_resume, t_lost in events:
+        ax.axvspan(t_resume * us.time, t_lost * us.time, color="0.55", alpha=0.13, linewidth=0)
+        ax.axvline(t_lost * us.time, color="0.45", linewidth=0.9, linestyle="--", zorder=0)
+        ax.axvline(t_resume * us.time, color="0.65", linewidth=0.9, linestyle=(0, (1, 2)), zorder=0)
+
+
 def align_reference(t, ref):
     """Bring the reference waveform onto this run's sample times.
 
@@ -117,7 +168,7 @@ def align_reference(t, ref):
     return np.interp(t, rt, rre), np.interp(t, rt, rim), True
 
 
-def plot_against_reference(t, re, im, ref, radius, us, outdir, stem):
+def plot_against_reference(t, re, im, ref, events, radius, us, outdir, stem):
     """Overlay on the reference run, with the relative difference beneath."""
     rre, rim, interpolated = align_reference(t, ref)
     if interpolated:
@@ -133,15 +184,19 @@ def plot_against_reference(t, re, im, ref, radius, us, outdir, stem):
     imax = int(np.nanargmax(rel))
 
     tt = t * us.time
-    tpk = tt[np.hypot(re, im).argmax()]
 
+    # Wide rather than tall: the x axis carries a chirp, twelve interruption
+    # events and a residual that climbs thirteen decades, and all three are
+    # read along it. A 2.1 aspect also drops straight onto a slide.
     fig, (top, bottom) = plt.subplots(
         2,
         1,
         sharex=True,
-        figsize=(FIGSIZE[0], FIGSIZE[1] * 1.5),
+        figsize=(12.6, 6.0),
         gridspec_kw={"height_ratios": [2.2, 1], "hspace": 0.08},
     )
+    for ax in (top, bottom):
+        mark_interruptions(ax, events, us)
     # Line for the reference, open circles for this run, one per stored
     # sample. Two line weights cannot express agreement here: matched, they
     # merge into one line; a pale thick one under a thin dark one turns the
@@ -172,13 +227,25 @@ def plot_against_reference(t, re, im, ref, radius, us, outdir, stem):
         zorder=2,
         label="this run (192 ranks, 1 spot node)",
     )
-    mark_peak(top, tpk, us, annotate=True)
     top.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
     top.set_ylabel(psi4_ylabel(radius, us, prefix=r"\mathrm{Re}\,"))
-    top.legend(loc="upper left", frameon=False)
+    handles, labels = top.get_legend_handles_labels()
+    if events:
+        # One entry for all twelve, since the spans are one repeated fact
+        # rather than twelve series. The patch shows the shade the reader
+        # has to recognise; the label says which edge is which.
+        recomputed = sum(t_lost - t_resume for t_resume, t_lost in events) * us.time
+        # The proxy is drawn heavier than the spans themselves: at the
+        # alpha that keeps twelve overlapping bands from swamping the data,
+        # a legend swatch this small is invisible.
+        handles.append(Patch(facecolor="0.55", alpha=0.45, edgecolor="0.45", linestyle="--"))
+        labels.append(
+            f"{len(events)} spot interruptions: lost (dashed), resumed (dotted), "
+            rf"${fmt_value(recomputed)}\,{us.time_unit}$ recomputed"
+        )
+    top.legend(handles, labels, loc="upper left", frameon=False)
 
     bottom.semilogy(tt, rel, color=GREEN, linewidth=1.8)
-    mark_peak(bottom, tpk, us, annotate=False)
     # Fourteen decades on a short panel. Ticks are laid from the ceiling
     # down, so the decade the maximum sits under is always labelled; the
     # floor is roundoff and needs no label of its own.
@@ -195,6 +262,9 @@ def plot_against_reference(t, re, im, ref, radius, us, outdir, stem):
         fontsize=11,
         color="0.35",
         va="top",
+        # The early interruptions cluster exactly here; without a backing
+        # the text reads through five overlapping bands.
+        bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none", "pad": 1.5},
     )
     bottom.set_xlabel(us.label("t", us.time_unit))
     bottom.set_ylabel(r"$|\Delta\Psi_4|\,/\,\max|\Psi_4|$")
@@ -243,7 +313,15 @@ def main():
     rd = np.loadtxt(ref_path, ndmin=2)
     ref = dedup_sorted(rd[:, 0], rd[:, 1], rd[:, 2])
     plot_against_reference(
-        t, re, im, ref, radius, us, args.out, f"psi4_vs_reference_{args.mode}_r{radius}{us.suffix}"
+        t,
+        re,
+        im,
+        ref,
+        load_interruptions(args.data),
+        radius,
+        us,
+        args.out,
+        f"psi4_vs_reference_{args.mode}_r{radius}{us.suffix}",
     )
 
 
