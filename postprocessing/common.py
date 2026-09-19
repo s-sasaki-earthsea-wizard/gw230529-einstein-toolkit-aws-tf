@@ -59,16 +59,20 @@ class UnitSystem:
     Psi4 scales by time rather than by length: G = c = 1 makes the two the
     same in the code, but Psi4 is the second time derivative of a
     dimensionless strain, so its SI dimension is s^-2 and not m^-2.
+
+    Each quantity arrives as (factor, axis label, plain name). The plain name
+    is what a data file's column header can say: axis labels are LaTeX, and a
+    TSV that a spreadsheet or an awk one-liner has to read cannot carry it.
     """
 
     def __init__(self, name, suffix, time, length, density, mass, psi4):
         self.name = name
         self.suffix = suffix
-        self.time, self.time_unit = time
-        self.length, self.length_unit = length
-        self.density, self.density_unit = density
-        self.mass, self.mass_unit = mass
-        self.psi4, self.psi4_unit = psi4
+        self.time, self.time_unit, self.time_plain = time
+        self.length, self.length_unit, self.length_plain = length
+        self.density, self.density_unit, self.density_plain = density
+        self.mass, self.mass_unit, self.mass_plain = mass
+        self.psi4, self.psi4_unit, self.psi4_plain = psi4
 
     def label(self, symbol, unit):
         """An axis label in math mode: symbol, then its unit in brackets."""
@@ -78,24 +82,24 @@ class UnitSystem:
 GEOMETRIC = UnitSystem(
     name="geom",
     suffix="",
-    time=(1.0, r"M_\odot"),
-    length=(1.0, r"M_\odot"),
-    density=(1.0, r"M_\odot^{-2}"),
-    mass=(1.0, r"M_\odot"),
-    psi4=(1.0, r"M_\odot^{-2}"),
+    time=(1.0, r"M_\odot", "Msun"),
+    length=(1.0, r"M_\odot", "Msun"),
+    density=(1.0, r"M_\odot^{-2}", "Msun^-2"),
+    mass=(1.0, r"M_\odot", "Msun"),
+    psi4=(1.0, r"M_\odot^{-2}", "Msun^-2"),
 )
 
 SI = UnitSystem(
     name="si",
     suffix="_si",
-    time=(M_SUN_SECONDS * 1e3, r"\mathrm{ms}"),
-    length=(M_SUN_METRES / 1e3, r"\mathrm{km}"),
-    density=(M_SUN_G_PER_CM3, r"\mathrm{g\,cm^{-3}}"),
+    time=(M_SUN_SECONDS * 1e3, r"\mathrm{ms}", "ms"),
+    length=(M_SUN_METRES / 1e3, r"\mathrm{km}", "km"),
+    density=(M_SUN_G_PER_CM3, r"\mathrm{g\,cm^{-3}}", "g/cm^3"),
     # Kilograms, not solar masses: a mass is the one quantity here that has a
     # readable non-SI unit, but mixing it into an otherwise SI figure invites
     # the reader to assume the other axes are astronomers' units too.
-    mass=(M_SUN_KG / 1e30, r"10^{30}\,\mathrm{kg}"),
-    psi4=(M_SUN_SECONDS**-2, r"\mathrm{s^{-2}}"),
+    mass=(M_SUN_KG / 1e30, r"10^{30}\,\mathrm{kg}", "1e30 kg"),
+    psi4=(M_SUN_SECONDS**-2, r"\mathrm{s^{-2}}", "s^-2"),
 )
 
 UNIT_SYSTEMS = {u.name: u for u in (GEOMETRIC, SI)}
