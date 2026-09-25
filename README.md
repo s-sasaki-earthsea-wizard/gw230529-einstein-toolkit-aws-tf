@@ -425,7 +425,7 @@ files carry an `_si` suffix. Cactus works in `G = c = M_sun = 1`, which is
 what the Einstein Toolkit gallery prints and what makes this run comparable
 to the reference one; it is also unreadable outside numerical relativity,
 where 1750 M is 8.62 ms, 500 M is 738 km and a rest-mass density of
-1.3e-3 is 7.8e14 g/cm³ — a number that places the star against nuclear
+1.3e-3 is 7.8e17 kg/m³ — a number that places the star against nuclear
 saturation density for an audience that has never met a solar mass to the
 minus two. `UNITS="geom si"` selects which sets are drawn; narrowing it to
 one halves `make movie`, the only target here where the second pass costs
@@ -449,7 +449,33 @@ of growth through inspiral and merger to a maximum of **4.4e-4 of the peak**.
 The two were never the same computation (480 ranks on 12 nodes against 192 on
 one), and the merger amplifies whatever they disagree on; that the difference
 still ends below 1e-3 is the result. Both files store the same 15.36 M
-cadence, so no interpolation enters the subtraction — and the reference is a
+cadence, so no interpolation enters the subtraction.
+
+The grey verticals are the twelve spot interruptions, placed on the
+simulation clock: a dashed line where a node was lost and a dotted one where
+the next resumed, the gap between them being work that had to be computed
+twice — 168 M_sun of the 1750, 9.6%. Lines rather than shaded spans, which
+put a fill under the data across a quarter of the axis for a figure that is
+about a waveform. They are read
+from the Cactus log rather than the ledger, because the log travels with the
+run data the figure already needs and an iteration counter that steps
+backwards is exactly one recovery; the twelve agree with `make ledger-chart`.
+Five of them land in the first 92 M (the 2026-08-27 c7a capacity crunch) and
+four in t = 1270–1386, straddling the ringdown. **The residual below them
+shows no step at any of the twelve** — recovery put the run back where it
+left off, and the only thing that grows is the ordinary divergence of two
+different rank decompositions.
+
+`make figures` also writes the numbers beside each figure, one pair per unit
+system: `psi4_vs_reference_*.tsv` carries a row per sample (time, both runs'
+real and imaginary parts, and the relative difference) and
+`psi4_interruptions*.tsv` the twelve events with their iteration numbers, so
+a row can be checked against `make ledger`. Tab separated with a `#`
+preamble and units in the column names — a talk quotes values, and reading
+them back off a PDF by eye is how a slide ends up disagreeing with the
+figure beside it.
+
+The reference is a
 line with this run's samples as open circles on it, rather than two lines:
 matched line weights merge into one curve, and a pale thick one under a thin
 dark one turns the reference into a halo, which reads as an error band. A
