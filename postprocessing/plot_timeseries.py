@@ -7,10 +7,10 @@ different scales, and a dual-axis chart invites misreading. Each carries the
 coordinate merger time as a reference line so the three can be read side by
 side in a talk.
 
---units si restates them in milliseconds, g/cm^3 and kilograms. The density
-figure is the one that gains most: the initial maximum is 7.8e14 g/cm^3,
-which places the star against nuclear saturation density for anyone who has
-never met a solar mass to the minus two.
+--units si restates them in milliseconds, kg/m^3 and kilograms. The density
+figure is the one that gains most: the initial maximum is 7.8e17 kg/m^3,
+which places the star against nuclear saturation density (2.8e17 kg/m^3) for
+anyone who has never met a solar mass to the minus two.
 """
 
 import argparse

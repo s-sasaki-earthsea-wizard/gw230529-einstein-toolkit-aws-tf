@@ -425,7 +425,7 @@ files carry an `_si` suffix. Cactus works in `G = c = M_sun = 1`, which is
 what the Einstein Toolkit gallery prints and what makes this run comparable
 to the reference one; it is also unreadable outside numerical relativity,
 where 1750 M is 8.62 ms, 500 M is 738 km and a rest-mass density of
-1.3e-3 is 7.8e14 g/cm³ — a number that places the star against nuclear
+1.3e-3 is 7.8e17 kg/m³ — a number that places the star against nuclear
 saturation density for an audience that has never met a solar mass to the
 minus two. `UNITS="geom si"` selects which sets are drawn; narrowing it to
 one halves `make movie`, the only target here where the second pass costs

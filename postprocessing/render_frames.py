@@ -16,7 +16,7 @@ the snapshot panel exists because three well-chosen stills often serve a
 slide better than a choppy animation.
 
 --units si labels the axes in kilometres, the clock in milliseconds and the
-colour bar in g/cm^3. The geometry options below stay in geometric units in
+colour bar in kg/m^3. The geometry options below stay in geometric units in
 both modes -- --extent picks a region of the grid rather than a region of
 the figure, so the same value has to mean the same picture either way.
 """

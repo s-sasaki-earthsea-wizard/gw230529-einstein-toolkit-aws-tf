@@ -47,9 +47,12 @@ G_SI = 6.67430e-11  # m^3 kg^-1 s^-2, CODATA 2018
 M_SUN_SECONDS = GM_SUN_SI / C_SI**3  # 4.9254909 us
 M_SUN_METRES = GM_SUN_SI / C_SI**2  # 1476.625 m
 M_SUN_KG = GM_SUN_SI / G_SI  # 1.98841e30 kg
-# Geometric density is M_sun / (GM_sun/c^2)^3 = c^6 / (G (GM_sun)^2). The
-# trailing 1e-3 turns kg/m^3 into the g/cm^3 that compact-object work quotes.
-M_SUN_G_PER_CM3 = C_SI**6 / (G_SI * GM_SUN_SI**2) * 1e-3  # 6.1758e17
+# Geometric density is M_sun / (GM_sun/c^2)^3 = c^6 / (G (GM_sun)^2), which
+# comes out in kg/m^3 as it stands. Compact-object papers quote g/cm^3, a
+# thousand times smaller, but that was the one CGS unit in a set labelled SI:
+# a reader moving between these figures and anything else in SI would have
+# to know that one axis alone was off by 10^3.
+M_SUN_KG_PER_M3 = C_SI**6 / (G_SI * GM_SUN_SI**2)  # 6.1758e20
 
 
 class UnitSystem:
@@ -94,7 +97,7 @@ SI = UnitSystem(
     suffix="_si",
     time=(M_SUN_SECONDS * 1e3, r"\mathrm{ms}", "ms"),
     length=(M_SUN_METRES / 1e3, r"\mathrm{km}", "km"),
-    density=(M_SUN_G_PER_CM3, r"\mathrm{g\,cm^{-3}}", "g/cm^3"),
+    density=(M_SUN_KG_PER_M3, r"\mathrm{kg\,m^{-3}}", "kg/m^3"),
     # Kilograms, not solar masses: a mass is the one quantity here that has a
     # readable non-SI unit, but mixing it into an otherwise SI figure invites
     # the reader to assume the other axes are astronomers' units too.
