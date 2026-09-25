@@ -106,26 +106,32 @@ def plot_waveform(t, re, im, radius, us, outdir, stem):
 # A Cactus info line: "[<iso>]   <iteration>   <cctk_time> | ..."
 INFO_LINE = re.compile(r"^\[(\S+)\]\s+(\d+)\s+([0-9.]+)\s+\|")
 
-# One lost node: where the run had got to, and where the next one picked up.
-# The iterations ride along so a row can be checked against `make ledger`
-# without deriving them again.
-Interruption = namedtuple("Interruption", "it_lost t_lost it_resume t_resume")
+# One resumption: where the run had got to before it lost its node, and
+# where the next node picked up. The iterations ride along so a row can be
+# checked against `make ledger` without deriving them again.
+Resumption = namedtuple("Resumption", "it_lost t_lost it_resume t_resume")
 
 
-def load_interruptions(datadir):
-    """Find where the run lost a node, in simulation time.
+def load_resumptions(datadir):
+    """Find where the run resumed from a checkpoint, in simulation time.
 
     A spot reclaim leaves no marker in the Cactus log -- the process simply
     stops mid-line. What it does leave is the next node's recovery: the
     iteration counter jumps backwards to the last banked checkpoint. Every
-    backward step in the log is therefore one interruption, and the pair it
+    backward step in the log is therefore one resumption, and the pair it
     yields is (the time the run had reached, the time it restarted from).
     The gap between them is work that had to be computed twice.
 
-    Read from the log rather than from the ledger, which says the same thing:
-    the log travels with the run data this figure already needs, while the
-    ledger is rebuilt from S3 and would put an AWS session in the way of a
-    figure. Checked against `make ledger-chart` output: same twelve events.
+    One resumption per interruption is not guaranteed, and on the 2026-08
+    run it did not hold: a node reclaimed before Cactus started writes
+    nothing here, so its loss folds into the next resumption. That is why
+    the log shows twelve and EC2 reclaimed thirteen -- see
+    count_interruptions for the second number.
+
+    Read from the log rather than from the ledger because the positions are
+    the log's to give: the ledger knows iterations per node, but the log is
+    where the run itself says where it went back to, and it travels with the
+    run data this figure already needs.
     """
     path = f"{datadir}/cactus-stdout.log"
     if not os.path.exists(path):
@@ -137,20 +143,58 @@ def load_interruptions(datadir):
             if m:
                 seen.append((int(m.group(2)), float(m.group(3))))
     return [
-        Interruption(*seen[i], *seen[i + 1])
+        Resumption(*seen[i], *seen[i + 1])
         for i in range(len(seen) - 1)
         if seen[i + 1][0] < seen[i][0]
     ]
 
 
-# How each end of an interruption is drawn. Lines only, no shading between
+# How the two ends of each resumption are drawn. Lines only, no shading between
 # them: a fill sits under the data across a quarter of the axis, and this
 # figure is about a waveform, not about the reclaims.
 LOST_STYLE = {"color": "0.45", "linewidth": 0.9, "linestyle": "--"}
 RESUME_STYLE = {"color": "0.65", "linewidth": 0.9, "linestyle": (0, (1, 2))}
 
 
-def mark_interruptions(ax, events, us):
+def count_interruptions(outdir, resumptions):
+    """How many nodes EC2 reclaimed, from the ledger, when it is on hand.
+
+    The log cannot count interruptions, only resumptions (load_resumptions).
+    Only the ledger (`make ledger-chart`, rebuilt from the bootstrap logs on
+    S3) knows about a node that died before Cactus started, so the count is
+    read from it when present and left off the figure when not; the lines
+    themselves stand on the log alone.
+
+    Cross-checked before it is quoted: the reclaimed nodes that did evolve
+    must be exactly as many as the resumptions the log shows, one each. If
+    they are not, the two files describe different runs, or one of them is
+    stale, and printing a second number beside the first would be a guess.
+    """
+    path = f"{outdir}/ledger.tsv"
+    if not os.path.exists(path):
+        print(f"no ledger at {path}: counting resumptions only (make ledger-chart adds the rest)")
+        return None
+    total = evolved = 0
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            cols = line.rstrip("\n").split("\t")
+            if cols[1] != "spot-interruption":
+                continue
+            total += 1
+            if cols[4] != "-":  # evolution_started
+                evolved += 1
+    if evolved != len(resumptions):
+        print(
+            f"ledger has {evolved} reclaimed nodes that evolved, the log {len(resumptions)} "
+            "resumptions: not quoting an interruption count"
+        )
+        return None
+    return total
+
+
+def mark_resumptions(ax, events, us):
     """Dash where a node was lost, dot where the next one resumed."""
     for ev in events:
         ax.axvline(ev.t_lost * us.time, zorder=0, **LOST_STYLE)
@@ -204,20 +248,28 @@ def dump_comparison_tsv(outdir, stem, t, re, im, rre, rim, rel, radius, us):
     )
 
 
-def dump_interruptions_tsv(outdir, stem, events, us):
-    """The twelve spot interruptions, on the simulation clock."""
+def dump_resumptions_tsv(outdir, stem, events, interruptions, us):
+    """Each resumption from a checkpoint, on the simulation clock."""
     if not events:
         return
     total = sum(e.t_lost - e.t_resume for e in events) * us.time
+    preamble = [
+        f"{len(events)} resumptions from a checkpoint, read from cactus-stdout.log:",
+        "an iteration counter that steps backwards is one node lost and the next recovering.",
+    ]
+    if interruptions is not None:
+        preamble.append(
+            f"The run had {interruptions} spot interruptions (ledger.tsv); "
+            f"{interruptions - len(events)} of them came before Cactus had started, "
+            "leaving no row here."
+        )
+    preamble += [
+        f"recomputed = t_lost - t_resume, work done twice. Total {total:.4g} {us.time_plain}.",
+        "Iterations are included so a row can be checked against `make ledger`.",
+    ]
     write_tsv(
         f"{outdir}/{stem}.tsv",
-        [
-            f"Spot interruptions during the run, {len(events)} of them, read from "
-            "cactus-stdout.log:",
-            "an iteration counter that steps backwards is one node lost and the next recovering.",
-            f"recomputed = t_lost - t_resume, work done twice. Total {total:.4g} {us.time_plain}.",
-            "Iterations are included so a row can be checked against `make ledger`.",
-        ],
+        preamble,
         [
             "it_lost",
             f"t_lost[{us.time_plain}]",
@@ -256,7 +308,7 @@ def align_reference(t, ref):
     return np.interp(t, rt, rre), np.interp(t, rt, rim), True
 
 
-def plot_against_reference(t, re, im, ref, events, radius, us, outdir, stem):
+def plot_against_reference(t, re, im, ref, events, interruptions, radius, us, outdir, stem):
     """Overlay on the reference run, with the relative difference beneath."""
     rre, rim, interpolated = align_reference(t, ref)
     if interpolated:
@@ -273,7 +325,7 @@ def plot_against_reference(t, re, im, ref, events, radius, us, outdir, stem):
 
     tt = t * us.time
 
-    # Wide rather than tall: the x axis carries a chirp, twelve interruption
+    # Wide rather than tall: the x axis carries a chirp, twelve resumption
     # events and a residual that climbs thirteen decades, and all three are
     # read along it. A 2.1 aspect also drops straight onto a slide.
     fig, (top, bottom) = plt.subplots(
@@ -284,7 +336,7 @@ def plot_against_reference(t, re, im, ref, events, radius, us, outdir, stem):
         gridspec_kw={"height_ratios": [2.2, 1], "hspace": 0.08},
     )
     for ax in (top, bottom):
-        mark_interruptions(ax, events, us)
+        mark_resumptions(ax, events, us)
     # Line for the reference, open circles for this run, one per stored
     # sample. Two line weights cannot express agreement here: matched, they
     # merge into one line; a pale thick one under a thin dark one turns the
@@ -319,15 +371,21 @@ def plot_against_reference(t, re, im, ref, events, radius, us, outdir, stem):
     top.set_ylabel(psi4_ylabel(radius, us, prefix=r"\mathrm{Re}\,"))
     handles, labels = top.get_legend_handles_labels()
     if events:
-        # One entry for all twelve, since the spans are one repeated fact
-        # rather than twelve series. The patch shows the shade the reader
-        # has to recognise; the label says which edge is which.
+        # One entry for all the pairs, since they are one repeated fact
+        # rather than a dozen series; the label says which line is which.
+        # Resumptions lead because they are what the lines are -- one pair
+        # per backward step in the log. Interruptions follow in brackets when
+        # the ledger can vouch for them: they are the larger number, and a
+        # reader counting pairs against it should see why.
         recomputed = sum(e.t_lost - e.t_resume for e in events) * us.time
+        head = f"{len(events)} resumptions"
+        if interruptions is not None:
+            head += f" ({interruptions} interruptions)"
         # Wrapped, because on one line this entry reaches past the merger
         # and sits on the waveform it is meant to annotate.
         handles.append(Line2D([], [], **LOST_STYLE))
         labels.append(
-            f"{len(events)} spot interruptions:\nlost (dashed), resumed (dotted)\n"
+            f"{head}:\nlost (dashed), resumed (dotted)\n"
             rf"${fmt_value(recomputed)}\,{us.time_unit}$ recomputed"
         )
     top.legend(handles, labels, loc="upper left", frameon=False)
@@ -349,7 +407,7 @@ def plot_against_reference(t, re, im, ref, events, radius, us, outdir, stem):
         fontsize=11,
         color="0.35",
         va="top",
-        # The early interruptions cluster exactly here; without a backing
+        # The early resumptions cluster exactly here; without a backing
         # the text reads through five overlapping bands.
         bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none", "pad": 1.5},
     )
@@ -360,7 +418,7 @@ def plot_against_reference(t, re, im, ref, events, radius, us, outdir, stem):
     # them a second time by eye off a PDF is how a slide ends up disagreeing
     # with the figure beside it.
     dump_comparison_tsv(outdir, stem, t, re, im, rre, rim, rel, radius, us)
-    dump_interruptions_tsv(outdir, f"psi4_interruptions{us.suffix}", events, us)
+    dump_resumptions_tsv(outdir, f"psi4_resumptions{us.suffix}", events, interruptions, us)
     print(
         f"reference comparison: max relative difference {np.nanmax(rel):.2e} "
         f"at t = {t[imax]:.2f} M, floor {np.nanmin(rel):.1e}"
@@ -404,12 +462,14 @@ def main():
         return
     rd = np.loadtxt(ref_path, ndmin=2)
     ref = dedup_sorted(rd[:, 0], rd[:, 1], rd[:, 2])
+    resumptions = load_resumptions(args.data)
     plot_against_reference(
         t,
         re,
         im,
         ref,
-        load_interruptions(args.data),
+        resumptions,
+        count_interruptions(args.out, resumptions),
         radius,
         us,
         args.out,
