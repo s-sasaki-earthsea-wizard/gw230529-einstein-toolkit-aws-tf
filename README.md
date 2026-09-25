@@ -451,17 +451,26 @@ one), and the merger amplifies whatever they disagree on; that the difference
 still ends below 1e-3 is the result. Both files store the same 15.36 M
 cadence, so no interpolation enters the subtraction.
 
-The grey verticals are the twelve spot interruptions, placed on the
-simulation clock: a dashed line where a node was lost and a dotted one where
-the next resumed, the gap between them being work that had to be computed
-twice — 168 M_sun of the 1750, 9.6%. Lines rather than shaded spans, which
-put a fill under the data across a quarter of the axis for a figure that is
-about a waveform. They are read
-from the Cactus log rather than the ledger, because the log travels with the
-run data the figure already needs and an iteration counter that steps
-backwards is exactly one recovery; the twelve agree with `make ledger-chart`.
-Five of them land in the first 92 M (the 2026-08-27 c7a capacity crunch) and
-four in t = 1270–1386, straddling the ringdown. **The residual below them
+The grey verticals are the run's twelve resumptions from a checkpoint,
+placed on the simulation clock: a dashed line where a node was lost and a
+dotted one where the next resumed, the gap between them being work that had
+to be computed twice — 168 M_sun of the 1750, 9.6%. Lines rather than shaded
+spans, which put a fill under the data across a quarter of the axis for a
+figure that is about a waveform. They are read from the Cactus log, where an
+iteration counter that steps backwards is exactly one resumption.
+
+**Twelve resumptions is not twelve interruptions.** EC2 reclaimed thirteen
+nodes; one of them (2026-08-27 12:18–12:29 UTC) went ten minutes into the
+checkpoint restore, before Cactus had started, so it wrote nothing to the log
+and moved no simulation time — its loss folds into the first pair of lines,
+which therefore spans two interruptions. Only the ledger knows about such a
+node, so the legend reads `12 resumptions (13 interruptions)` when
+`ledger.tsv` is present, after checking that the reclaimed nodes which did
+evolve number exactly as many as the resumptions; without the ledger it
+states the resumptions alone.
+
+Five resumptions land in the first 92 M (the 2026-08-27 c7a capacity crunch)
+and four in t = 1270–1386, straddling the ringdown. **The residual below them
 shows no step at any of the twelve** — recovery put the run back where it
 left off, and the only thing that grows is the ordinary divergence of two
 different rank decompositions.
@@ -469,8 +478,8 @@ different rank decompositions.
 `make figures` also writes the numbers beside each figure, one pair per unit
 system: `psi4_vs_reference_*.tsv` carries a row per sample (time, both runs'
 real and imaginary parts, and the relative difference) and
-`psi4_interruptions*.tsv` the twelve events with their iteration numbers, so
-a row can be checked against `make ledger`. Tab separated with a `#`
+`psi4_resumptions*.tsv` the twelve resumptions with their iteration numbers,
+so a row can be checked against `make ledger`. Tab separated with a `#`
 preamble and units in the column names — a talk quotes values, and reading
 them back off a PDF by eye is how a slide ends up disagreeing with the
 figure beside it.
