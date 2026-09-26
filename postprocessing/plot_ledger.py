@@ -389,7 +389,7 @@ def draw(nodes, run, outdir):
     compute = 100 * run["evolution_s"] / run["uptime_s"]
     effective = 100 * run["evolution_s"] / run["span_s"]
     ax.set_title(
-        f"{run['nodes']} spot nodes served the run, across {_hm(run['span_s'])} of wall clock\n"
+        f"{run['nodes']} spot nodes served the run, across {_hm(run['span_s'])} of wall time\n"
         f"nodes up {duty:.1f}% of it  ·  evolving {compute:.1f}% of their uptime  "
         f"·  {effective:.1f}% effective",
         fontsize=11.5,
